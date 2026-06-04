@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="page-shell">
+        <header class="hero">
+            <div>
+                <p class="eyebrow">Live LMS Analytics</p>
+                <h1>Student Assessment Analytics Dashboard</h1>
+                <p class="subtitle">Track assessment performance, domain intelligence, weak topics, and action-ready recommendations from live exam data.</p>
+            </div>
+            <div class="hero-actions">
+                <button id="refreshButton" class="primary-button">Refresh Live Data</button>
+                <button id="csvButton" class="secondary-button">Export CSV</button>
+                <button id="pdfButton" class="secondary-button">Export PDF</button>
+            </div>
+        </header>
+
+        <section class="meta-strip">
+            <div>
+                <span class="meta-label">Student</span>
+                <strong id="studentName">Loading...</strong>
+            </div>
+            <div>
+                <span class="meta-label">Candidate ID</span>
+                <strong id="candidateId">-</strong>
+            </div>
+            <div>
+                <span class="meta-label">Exam</span>
+                <strong id="examName">-</strong>
+            </div>
+            <div>
+                <span class="meta-label">Last Updated</span>
+                <strong id="generatedAt">-</strong>
+            </div>
+            <div>
+                <span class="meta-label">Data Source</span>
+                <strong id="dataSource">-</strong>
+            </div>
+        </section>
+
+        <section class="card-grid" id="summaryCards"></section>
+
+        <section class="grid-two">
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Domain Analytics</h2>
+                    <p>Strength, weakness, and accuracy classification across target skill groups.</p>
+                </div>
+                <div class="canvas-wrap">
+                    <canvas id="domainBarChart"></canvas>
+                </div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Skill Comparison</h2>
+                    <p>Radar view for relative proficiency across Backend, Frontend, ML, Security, and DevOps.</p>
+                </div>
+                <div class="canvas-wrap">
+                    <canvas id="domainRadarChart"></canvas>
+                </div>
+            </article>
+        </section>
+
+        <section class="grid-two">
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Correct vs Incorrect</h2>
+                    <p>Quick quality snapshot of the assessment attempt.</p>
+                </div>
+                <div class="canvas-wrap small">
+                    <canvas id="accuracyPieChart"></canvas>
+                </div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Time Efficiency</h2>
+                    <p>Average response time by domain using attempt duration and answered-question distribution.</p>
+                </div>
+                <div class="canvas-wrap">
+                    <canvas id="timeBarChart"></canvas>
+                </div>
+            </article>
+        </section>
+
+        <section class="grid-two">
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Strengths & Weaknesses</h2>
+                    <p>Auto-classified performance areas based on accuracy thresholds.</p>
+                </div>
+                <div class="tags-block">
+                    <div>
+                        <h3>Strengths</h3>
+                        <div id="strengthTags" class="tag-row"></div>
+                    </div>
+                    <div>
+                        <h3>Weaknesses</h3>
+                        <div id="weaknessTags" class="tag-row"></div>
+                    </div>
+                </div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Recommendations</h2>
+                    <p>Generated using the configured analysis API with deterministic fallbacks.</p>
+                </div>
+                <ul id="recommendationList" class="recommendation-list"></ul>
+            </article>
+        </section>
+
+        <section class="panel">
+            <div class="panel-header">
+                <h2>Question-Level Analysis</h2>
+                <p>Search, filter, and inspect the question performance detail.</p>
+            </div>
+
+            <div class="filters">
+                <input id="searchInput" type="search" placeholder="Search by question text or topic">
+                <select id="domainFilter">
+                    <option value="all">All Domains</option>
+                </select>
+                <select id="statusFilter">
+                    <option value="all">All Statuses</option>
+                    <option value="Correct">Correct</option>
+                    <option value="Incorrect">Incorrect</option>
+                    <option value="Skipped">Skipped</option>
+                </select>
+            </div>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Question</th>
+                            <th>Domain</th>
+                            <th>Topic</th>
+                            <th>Status</th>
+                            <th>Marks</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="questionTableBody"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-header">
+                <h2>Raw API Responses</h2>
+                <p>Live upstream payloads from all provided LMS endpoints and the analysis API.</p>
+            </div>
+            <div id="rawApiGrid" class="raw-api-grid"></div>
+        </section>
+    </div>
+
+    <script type="module" src="/static/js/dashboard.js"></script>
+</body>
+</html>
