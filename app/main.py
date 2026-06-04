@@ -13,7 +13,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import BASE_DIR, DATABASE_PATH
 from app.database import fetch_latest_snapshot, initialize_database, save_snapshot
-from app.models.schemas import DashboardResponse
+from app.models.schemas import DashboardPayload, DashboardResponse
 from app.services.analytics import build_dashboard_payload
 from app.services.api_client import LMSApiClient
 
@@ -51,25 +51,52 @@ async def health() -> dict[str, str]:
 
 @app.get("/api/dashboard/analytics", response_model=DashboardResponse)
 async def dashboard_analytics(force_refresh: bool = Query(default=True)) -> DashboardResponse:
+    payload, source = await _load_dashboard_payload(force_refresh=force_refresh)
+    return DashboardResponse(data=payload, source=source)
+
+
+@app.get("/api/analysis/all", response_model=DashboardPayload)
+async def analysis_all(force_refresh: bool = Query(default=True)) -> DashboardPayload:
+    payload, _ = await _load_dashboard_payload(force_refresh=force_refresh)
+    return payload
+
+
+@app.get("/api/analysis/latest", response_model=DashboardPayload)
+async def analysis_latest() -> DashboardPayload:
+    cached_payload = fetch_latest_snapshot(DATABASE_PATH)
+    if cached_payload is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No cached analysis is available yet. Call /api/analysis/all first.",
+        )
+    return cached_payload
+
+
+async def _load_dashboard_payload(force_refresh: bool) -> tuple[dict, str]:
     if not force_refresh:
         cached_payload = fetch_latest_snapshot(DATABASE_PATH)
         if cached_payload is not None:
-            return DashboardResponse(data=cached_payload, source="cache")
+            return cached_payload, "cache"
 
-    client = LMSApiClient()
     try:
-        raw_payload = await client.fetch_all()
-        logger.info("Upstream API payloads:\n%s", json.dumps(raw_payload.get("raw_apis", {}), indent=2, default=str))
-        payload = await build_dashboard_payload(raw_payload)
-        logger.info("Computed analytics snapshot:\n%s", json.dumps(payload, indent=2, default=str))
-        payload["snapshot_id"] = save_snapshot(DATABASE_PATH, payload)
-        return DashboardResponse(data=payload, source="live")
+        payload = await _build_and_store_dashboard_payload()
+        return payload, "live"
     except Exception as exc:  # noqa: BLE001
         logger.exception("Dashboard analytics build failed")
         cached_payload = fetch_latest_snapshot(DATABASE_PATH)
         if cached_payload is not None:
-            return DashboardResponse(data=cached_payload, source="cache")
+            return cached_payload, "cache"
         raise HTTPException(status_code=502, detail=f"Unable to build dashboard analytics: {exc}") from exc
+
+
+async def _build_and_store_dashboard_payload() -> dict:
+    client = LMSApiClient()
+    raw_payload = await client.fetch_all()
+    logger.info("Upstream API payloads:\n%s", json.dumps(raw_payload.get("raw_apis", {}), indent=2, default=str))
+    payload = await build_dashboard_payload(raw_payload)
+    logger.info("Computed analytics snapshot:\n%s", json.dumps(payload, indent=2, default=str))
+    payload["snapshot_id"] = save_snapshot(DATABASE_PATH, payload)
+    return payload
 
 
 @app.get("/api/dashboard/history")
