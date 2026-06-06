@@ -103,7 +103,11 @@ def _build_multi_candidate_dashboard(
     candidate_analyses = analysis_payload.get("candidate_analyses", {})
     top_performer = analysis_payload.get("top_performer", {}) or (ranked_candidates[0] if ranked_candidates else {})
     selected_id = selected_candidate_id or top_performer.get("candidate_id")
-    selected_entry = candidate_analyses.get(str(selected_id)) or next(iter(candidate_analyses.values()), {})
+    selected_entry = candidate_analyses.get(str(selected_id))
+    if selected_entry is None and selected_candidate_id is None:
+        selected_entry = next(iter(candidate_analyses.values()), {})
+    elif selected_entry is None:
+        selected_entry = {}
     selected_candidate = _build_multi_selected_candidate_detail(selected_entry, ranked_candidates)
     aggregate_analysis = _build_multi_aggregate_analysis(
         ranked_candidates=ranked_candidates,

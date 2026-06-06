@@ -66,6 +66,18 @@ async def dashboard_overview(
     selected_candidate_id: int | None = Query(default=None),
 ) -> JSONResponse:
     analysis_payload, source = await _load_dashboard_payload(force_refresh=force_refresh)
+    if selected_candidate_id is not None and not _payload_has_candidate(analysis_payload, selected_candidate_id):
+        file_payload = _load_live_analysis_payload()
+        if file_payload is not None and _payload_has_candidate(file_payload, selected_candidate_id):
+            analysis_payload = file_payload
+            source = "file"
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No cached analysis found for selected_candidate_id {selected_candidate_id}. "
+                "Call /api/analysis/all?force_refresh=true to rebuild the analysis.",
+            )
+
     corpus_payload = _load_live_corpus_payload()
     overview = build_aggregate_dashboard(
         analysis_payload,
@@ -205,6 +217,23 @@ def _load_live_corpus_payload() -> dict:
     if LIVE_API_CORPUS_JSON_PATH.exists():
         return json.loads(LIVE_API_CORPUS_JSON_PATH.read_text(encoding="utf-8"))
     return {}
+
+
+def _load_live_analysis_payload() -> dict | None:
+    if LIVE_ANALYSIS_JSON_PATH.exists():
+        return json.loads(LIVE_ANALYSIS_JSON_PATH.read_text(encoding="utf-8"))
+    return None
+
+
+def _payload_has_candidate(payload: dict, candidate_id: int) -> bool:
+    if payload.get("candidate_analyses"):
+        return str(candidate_id) in payload.get("candidate_analyses", {})
+    if int(payload.get("student", {}).get("candidate_id") or 0) == candidate_id:
+        return True
+    return any(
+        int(row.get("candidate_id") or 0) == candidate_id
+        for row in payload.get("ranked_candidates", payload.get("rankings", []))
+    )
 
 
 def _extract_candidate_analysis(payload: dict, candidate_id: int) -> dict | None:
