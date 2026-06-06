@@ -12,21 +12,33 @@ function registerChart(chart) {
 export function renderCharts(payload) {
     destroyCharts();
 
-    const domainLabels = payload.domains.map((domain) => domain.domain);
-    const domainAccuracy = payload.domains.map((domain) => domain.accuracy);
-    const domainTime = payload.domains.map((domain) => domain.average_time_seconds);
+    const selectedCandidate = payload.selected_candidate || {};
+    const domainLabels = (selectedCandidate.domains || []).map((domain) => domain.domain);
+    const domainAccuracy = (selectedCandidate.domains || []).map((domain) => domain.accuracy);
+    const skillLabels = selectedCandidate.skill_radar?.labels?.length
+        ? selectedCandidate.skill_radar.labels
+        : ["No detailed skills"];
+    const skillScores = selectedCandidate.skill_radar?.scores?.length
+        ? selectedCandidate.skill_radar.scores
+        : [0];
+    const rankingLabels = payload.charts?.ranking_labels?.length
+        ? payload.charts.ranking_labels
+        : ["No candidates"];
+    const compositeScores = payload.charts?.composite_scores?.length
+        ? payload.charts.composite_scores
+        : [0];
 
     registerChart(
-        new Chart(document.getElementById("domainBarChart"), {
+        new Chart(document.getElementById("cohortRankingChart"), {
             type: "bar",
             data: {
-                labels: domainLabels,
+                labels: rankingLabels,
                 datasets: [
                     {
-                        label: "Accuracy %",
-                        data: domainAccuracy,
+                        label: "Composite Score",
+                        data: compositeScores,
                         borderRadius: 12,
-                        backgroundColor: ["#38bdf8", "#0ea5e9", "#22c55e", "#f59e0b", "#a855f7"],
+                        backgroundColor: "#38bdf8",
                     },
                 ],
             },
@@ -44,14 +56,14 @@ export function renderCharts(payload) {
     );
 
     registerChart(
-        new Chart(document.getElementById("domainRadarChart"), {
+        new Chart(document.getElementById("selectedSkillRadarChart"), {
             type: "radar",
             data: {
-                labels: domainLabels,
+                labels: skillLabels,
                 datasets: [
                     {
                         label: "Skill Score",
-                        data: domainAccuracy,
+                        data: skillScores,
                         fill: true,
                         backgroundColor: "rgba(56, 189, 248, 0.2)",
                         borderColor: "#38bdf8",
@@ -73,37 +85,14 @@ export function renderCharts(payload) {
     );
 
     registerChart(
-        new Chart(document.getElementById("accuracyPieChart"), {
-            type: "pie",
-            data: {
-                labels: ["Correct", "Incorrect", "Skipped"],
-                datasets: [
-                    {
-                        data: [
-                            payload.summary.correct_answers,
-                            payload.summary.incorrect_answers,
-                            payload.summary.total_questions - payload.summary.attempted_questions,
-                        ],
-                        backgroundColor: ["#22c55e", "#ef4444", "#f59e0b"],
-                    },
-                ],
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-            },
-        }),
-    );
-
-    registerChart(
-        new Chart(document.getElementById("timeBarChart"), {
+        new Chart(document.getElementById("selectedDomainBarChart"), {
             type: "bar",
             data: {
                 labels: domainLabels,
                 datasets: [
                     {
-                        label: "Avg Time (s)",
-                        data: domainTime,
+                        label: "Domain Accuracy %",
+                        data: domainAccuracy,
                         borderRadius: 12,
                         backgroundColor: "#a855f7",
                     },
@@ -115,6 +104,7 @@ export function renderCharts(payload) {
                 scales: {
                     y: {
                         beginAtZero: true,
+                        max: 100,
                     },
                 },
             },

@@ -245,8 +245,113 @@ table td {
     flex: 1;
 }
 
+.leaderboard-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.spotlight-card,
+.candidate-detail {
+    display: grid;
+    gap: 16px;
+}
+
+.candidate-list {
+    display: grid;
+    gap: 12px;
+}
+
+.candidate-card {
+    text-align: left;
+    width: 100%;
+    padding: 16px;
+    border-radius: 18px;
+    border: 1px solid var(--panel-border);
+    background: rgba(15, 23, 42, 0.65);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.candidate-card.active {
+    border-color: var(--accent);
+    background: rgba(56, 189, 248, 0.12);
+}
+
+.candidate-card-header,
+.candidate-detail-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.candidate-card p,
+.support-text,
+.detail-list p,
+.empty-state {
+    margin: 0;
+    color: var(--muted);
+}
+
+.detail-metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+}
+
+.detail-metric {
+    padding: 14px;
+    border-radius: 18px;
+    border: 1px solid var(--panel-border);
+    background: rgba(15, 23, 42, 0.55);
+}
+
+.detail-metric strong {
+    display: block;
+    margin-top: 8px;
+    font-size: 1.3rem;
+    color: var(--text);
+}
+
+.detail-list {
+    display: grid;
+    gap: 10px;
+}
+
 .table-wrap {
     overflow-x: auto;
+}
+
+.course-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+}
+
+.course-card {
+    padding: 18px;
+    border-radius: 18px;
+    border: 1px solid var(--panel-border);
+    background: rgba(15, 23, 42, 0.65);
+}
+
+.course-card-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    margin-bottom: 12px;
+}
+
+.course-card h3,
+.course-card p {
+    margin: 0;
+}
+
+.course-card p {
+    color: var(--muted);
 }
 
 .raw-api-grid {

@@ -1,5 +1,9 @@
-export async function fetchDashboard(forceRefresh = true) {
-    const response = await fetch(`/api/dashboard/analytics?force_refresh=${forceRefresh}`);
+export async function fetchDashboard(forceRefresh = true, selectedCandidateId = null) {
+    const params = new URLSearchParams({ force_refresh: String(forceRefresh) });
+    if (selectedCandidateId !== null && selectedCandidateId !== undefined) {
+        params.set("selected_candidate_id", String(selectedCandidateId));
+    }
+    const response = await fetch(`/api/dashboard/overview?${params.toString()}`);
     if (!response.ok) {
         let detail = "Failed to load dashboard analytics";
         try {

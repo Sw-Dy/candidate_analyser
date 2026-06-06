@@ -29,6 +29,8 @@ def initialize_database(database_path: Path) -> None:
 
 
 def save_snapshot(database_path: Path, payload: dict[str, Any]) -> int:
+    student = payload.get("student", {})
+    exam = payload.get("exam", {})
     connection = get_connection(database_path)
     cursor = connection.cursor()
     cursor.execute(
@@ -41,8 +43,8 @@ def save_snapshot(database_path: Path, payload: dict[str, Any]) -> int:
         ) VALUES (?, ?, ?, ?)
         """,
         (
-            payload["student"]["candidate_id"],
-            payload["exam"]["exam_id"],
+            int(student.get("candidate_id") or 0),
+            int(exam.get("exam_id") or 0),
             payload["generated_at"],
             json.dumps(payload),
         ),

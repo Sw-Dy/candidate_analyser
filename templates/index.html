@@ -7,16 +7,16 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260605-2">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <div class="page-shell">
         <header class="hero">
             <div>
-                <p class="eyebrow">Live LMS Analytics</p>
-                <h1>Student Assessment Analytics Dashboard</h1>
-                <p class="subtitle">Track assessment performance, domain intelligence, weak topics, and action-ready recommendations from live exam data.</p>
+                <p class="eyebrow">Live Candidate Intelligence</p>
+                <h1>Candidate Performance Dashboard</h1>
+                <p class="subtitle">Review the top performer, compare ranked candidates, and inspect candidate-level analysis from the live corpus snapshot.</p>
             </div>
             <div class="hero-actions">
                 <button id="refreshButton" class="primary-button">Refresh Live Data</button>
@@ -27,16 +27,20 @@
 
         <section class="meta-strip">
             <div>
-                <span class="meta-label">Student</span>
-                <strong id="studentName">Loading...</strong>
-            </div>
-            <div>
-                <span class="meta-label">Candidate ID</span>
-                <strong id="candidateId">-</strong>
-            </div>
-            <div>
                 <span class="meta-label">Exam</span>
-                <strong id="examName">-</strong>
+                <strong id="examName">Loading...</strong>
+            </div>
+            <div>
+                <span class="meta-label">Candidates</span>
+                <strong id="candidateCount">-</strong>
+            </div>
+            <div>
+                <span class="meta-label">Top Performer</span>
+                <strong id="topPerformerMeta">-</strong>
+            </div>
+            <div>
+                <span class="meta-label">Current Candidate</span>
+                <strong id="currentCandidateMeta">-</strong>
             </div>
             <div>
                 <span class="meta-label">Last Updated</span>
@@ -53,21 +57,57 @@
         <section class="grid-two">
             <article class="panel">
                 <div class="panel-header">
-                    <h2>Domain Analytics</h2>
-                    <p>Strength, weakness, and accuracy classification across target skill groups.</p>
+                    <h2>Top Performer Analysis</h2>
+                    <p>Focused summary of the leading candidate using marks, accuracy, and speed.</p>
+                </div>
+                <div id="topPerformerPanel" class="spotlight-card"></div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Aggregate Analysis</h2>
+                    <p>Cohort-wide insights generated from the currently available ranked candidates.</p>
+                </div>
+                <ul id="aggregateInsightList" class="recommendation-list"></ul>
+            </article>
+        </section>
+
+        <section class="grid-two">
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Ranked Candidates</h2>
+                    <p>Click any candidate to inspect the fullest available analysis for that person.</p>
+                </div>
+                <div id="candidateList" class="candidate-list"></div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Selected Candidate</h2>
+                    <p>Candidate details, performance summary, and complete analysis where available.</p>
+                </div>
+                <div id="selectedCandidatePanel" class="candidate-detail"></div>
+            </article>
+        </section>
+
+        <section class="grid-two">
+            <article class="panel">
+                <div class="panel-header">
+                    <h2>Cohort Ranking Chart</h2>
+                    <p>Composite score comparison across the highest-ranked available candidates.</p>
                 </div>
                 <div class="canvas-wrap">
-                    <canvas id="domainBarChart"></canvas>
+                    <canvas id="cohortRankingChart"></canvas>
                 </div>
             </article>
 
             <article class="panel">
                 <div class="panel-header">
-                    <h2>Skill Comparison</h2>
-                    <p>Radar view for relative proficiency across Backend, Frontend, ML, Security, and DevOps.</p>
+                    <h2>Selected Skill Radar</h2>
+                    <p>Skill distribution for the selected candidate, when skill-level analysis is available.</p>
                 </div>
                 <div class="canvas-wrap">
-                    <canvas id="domainRadarChart"></canvas>
+                    <canvas id="selectedSkillRadarChart"></canvas>
                 </div>
             </article>
         </section>
@@ -75,56 +115,35 @@
         <section class="grid-two">
             <article class="panel">
                 <div class="panel-header">
-                    <h2>Correct vs Incorrect</h2>
-                    <p>Quick quality snapshot of the assessment attempt.</p>
-                </div>
-                <div class="canvas-wrap small">
-                    <canvas id="accuracyPieChart"></canvas>
-                </div>
-            </article>
-
-            <article class="panel">
-                <div class="panel-header">
-                    <h2>Time Efficiency</h2>
-                    <p>Average response time by domain using attempt duration and answered-question distribution.</p>
+                    <h2>Domain Performance</h2>
+                    <p>Domain-wise accuracy for the selected candidate where detailed analysis exists.</p>
                 </div>
                 <div class="canvas-wrap">
-                    <canvas id="timeBarChart"></canvas>
-                </div>
-            </article>
-        </section>
-
-        <section class="grid-two">
-            <article class="panel">
-                <div class="panel-header">
-                    <h2>Strengths & Weaknesses</h2>
-                    <p>Auto-classified performance areas based on accuracy thresholds.</p>
-                </div>
-                <div class="tags-block">
-                    <div>
-                        <h3>Strengths</h3>
-                        <div id="strengthTags" class="tag-row"></div>
-                    </div>
-                    <div>
-                        <h3>Weaknesses</h3>
-                        <div id="weaknessTags" class="tag-row"></div>
-                    </div>
+                    <canvas id="selectedDomainBarChart"></canvas>
                 </div>
             </article>
 
             <article class="panel">
                 <div class="panel-header">
-                    <h2>Recommendations</h2>
-                    <p>Generated using the configured analysis API with deterministic fallbacks.</p>
+                    <h2>Recommended LMS Courses</h2>
+                    <p>Upskilling suggestions for the selected candidate using the live LMS course catalog.</p>
                 </div>
-                <ul id="recommendationList" class="recommendation-list"></ul>
+                <div id="courseRecommendationGrid" class="course-grid"></div>
             </article>
         </section>
 
         <section class="panel">
             <div class="panel-header">
+                <h2>Candidate Recommendations</h2>
+                <p>Action items specific to the selected candidate.</p>
+            </div>
+            <ul id="recommendationList" class="recommendation-list"></ul>
+        </section>
+
+        <section class="panel">
+            <div class="panel-header">
                 <h2>Question-Level Analysis</h2>
-                <p>Search, filter, and inspect the question performance detail.</p>
+                <p>Question detail is shown when full analysis is available for the selected candidate.</p>
             </div>
 
             <div class="filters">
@@ -147,7 +166,9 @@
                             <th>ID</th>
                             <th>Question</th>
                             <th>Domain</th>
+                            <th>Skill</th>
                             <th>Topic</th>
+                            <th>Difficulty</th>
                             <th>Status</th>
                             <th>Marks</th>
                             <th>Time</th>
@@ -156,17 +177,10 @@
                     <tbody id="questionTableBody"></tbody>
                 </table>
             </div>
-        </section>
-
-        <section class="panel">
-            <div class="panel-header">
-                <h2>Raw API Responses</h2>
-                <p>Live upstream payloads from all provided LMS endpoints and the analysis API.</p>
-            </div>
-            <div id="rawApiGrid" class="raw-api-grid"></div>
+            <p id="questionEmptyState" class="empty-state" hidden>No detailed question analysis is available for the selected candidate in the current live corpus.</p>
         </section>
     </div>
 
-    <script type="module" src="/static/js/dashboard.js"></script>
+    <script type="module" src="/static/js/dashboard.js?v=20260605-2"></script>
 </body>
 </html>

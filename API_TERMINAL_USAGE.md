@@ -99,6 +99,26 @@ curl.exe "http://127.0.0.1:8000/api/health"
 curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true"
 ```
 
+#### Candidate-specific analysis
+
+Replace `12254` with any candidate id present in `analysis.json`.
+
+```bash
+curl.exe "http://127.0.0.1:8000/api/analysis/candidate/12254"
+```
+
+#### Candidate-specific attempts
+
+```bash
+curl.exe "http://127.0.0.1:8000/api/analysis/candidate/12254/attempts"
+```
+
+#### Dashboard focused on one candidate
+
+```bash
+curl.exe "http://127.0.0.1:8000/api/dashboard/overview?force_refresh=false&selected_candidate_id=12254"
+```
+
 #### Latest cached analysis
 
 ```bash
@@ -127,3 +147,10 @@ If you want all analysis details in JSON directly in terminal, run:
 ```bash
 curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true"
 ```
+
+The refreshed `analysis.json` stores the multi-candidate analysis under:
+
+- `candidate_analyses`
+- `candidates`
+- `ranked_candidates`
+- `attempt_analyses`

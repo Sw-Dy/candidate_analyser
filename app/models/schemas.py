@@ -37,7 +37,12 @@ class DashboardPayload(BaseModel):
     questions: list[dict[str, Any]]
     strengths: list[str]
     weaknesses: list[str]
+    skill_radar: dict[str, Any]
+    rankings: list[dict[str, Any]]
+    top_performer: dict[str, Any]
+    ranking_summary: dict[str, Any]
     recommendations: list[str]
+    recommended_courses: list[dict[str, Any]]
     raw_apis: dict[str, Any]
     generated_at: str
     snapshot_id: int | None = None

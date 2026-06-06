@@ -1,14 +1,21 @@
-import { downloadCsv, fetchDashboard } from "./api.js";
-import { renderCharts } from "./charts.js";
+import { downloadCsv, fetchDashboard } from "./api.js?v=20260605-2";
+import { renderCharts } from "./charts.js?v=20260605-2";
 
 const summaryCards = document.getElementById("summaryCards");
 const questionTableBody = document.getElementById("questionTableBody");
 const domainFilter = document.getElementById("domainFilter");
 const statusFilter = document.getElementById("statusFilter");
 const searchInput = document.getElementById("searchInput");
-const rawApiGrid = document.getElementById("rawApiGrid");
+const courseRecommendationGrid = document.getElementById("courseRecommendationGrid");
+const candidateList = document.getElementById("candidateList");
+const topPerformerPanel = document.getElementById("topPerformerPanel");
+const aggregateInsightList = document.getElementById("aggregateInsightList");
+const selectedCandidatePanel = document.getElementById("selectedCandidatePanel");
+const recommendationList = document.getElementById("recommendationList");
+const questionEmptyState = document.getElementById("questionEmptyState");
 
 let currentPayload = null;
+let selectedCandidateId = null;
 
 function formatNumber(value) {
     return Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -29,19 +36,14 @@ function setText(id, value) {
     }
 }
 
-function escapeHtml(value) {
-    return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;");
-}
-
 function renderSummaryCards(payload) {
+    const metrics = payload.aggregate_analysis?.metrics || {};
     const cards = [
-        { label: "Overall Score", value: `${formatNumber(payload.summary.overall_score_percent)}%`, meta: `${payload.summary.obtained_marks}/${payload.summary.total_marks} marks` },
-        { label: "Accuracy", value: `${formatNumber(payload.summary.accuracy)}%`, meta: `${payload.summary.correct_answers} correct answers` },
-        { label: "Attempted", value: `${payload.summary.attempted_questions}/${payload.summary.total_questions}`, meta: "Question coverage" },
-        { label: "Time Taken", value: payload.summary.time_taken_display, meta: `${formatNumber(payload.summary.average_time_per_question_seconds)} sec/question` },
+        { label: "Candidates", value: `${metrics.total_candidates || 0}`, meta: "Ranked in live corpus" },
+        { label: "Attempts", value: `${metrics.total_attempts || 0}`, meta: "Exam records analyzed" },
+        { label: "Avg Accuracy", value: `${formatNumber(metrics.average_accuracy || 0)}%`, meta: "Cohort-wide average" },
+        { label: "Avg Marks", value: `${formatNumber(metrics.average_marks_percent || 0)}%`, meta: "Marks conversion across candidates" },
+        { label: "Strong Performers", value: `${metrics.strong_performers || 0}`, meta: `${metrics.at_risk_candidates || 0} at-risk candidates` },
     ];
 
     summaryCards.innerHTML = cards.map((card) => `
@@ -55,50 +57,48 @@ function renderSummaryCards(payload) {
 
 function renderTags(id, values, className) {
     const container = document.getElementById(id);
-    container.innerHTML = values.map((value) => `<span class="tag ${className}">${value}</span>`).join("");
+    if (!container) {
+        return;
+    }
+    container.innerHTML = (values || []).map((value) => `<span class="tag ${className}">${value}</span>`).join("");
 }
 
 function renderRecommendations(items) {
-    const list = document.getElementById("recommendationList");
-    list.innerHTML = items.map((item) => `<li>${item}</li>`).join("");
+    recommendationList.innerHTML = items.length
+        ? items.map((item) => `<li>${item}</li>`).join("")
+        : "<li>No recommendation text is available for the selected candidate.</li>";
 }
 
-function renderRawApis(rawApis) {
-    const entries = Object.entries(rawApis || {});
-    rawApiGrid.innerHTML = entries.map(([key, value]) => {
-        const body = JSON.stringify(value?.body ?? value, null, 2);
-        const meta = [
-            value?.status_code ? `Status: ${value.status_code}` : null,
-            value?.ok !== undefined ? `OK: ${value.ok}` : null,
-            value?.url ? value.url : null,
-        ].filter(Boolean).join(" | ");
-
-        return `
-            <article class="raw-api-card">
-                <h3>${key}</h3>
-                <p>${meta || "No metadata available"}</p>
-                <pre>${escapeHtml(body)}</pre>
-            </article>
-        `;
-    }).join("");
+function renderCourseRecommendations(items) {
+    courseRecommendationGrid.innerHTML = items.length ? items.map((item) => `
+        <article class="course-card">
+            <div class="course-card-header">
+                <h3>${item.course_name}</h3>
+                <span class="tag ${item.priority === "High" ? "strong" : ""}">${item.priority}</span>
+            </div>
+            <p>${item.reason}</p>
+        </article>
+    `).join("") : "<p class=\"empty-state\">No LMS course recommendations are available for the selected candidate.</p>";
 }
 
-function renderDomainFilter(domains) {
+function renderDomainFilter(candidate) {
+    const domains = candidate.domains || [];
     const options = ['<option value="all">All Domains</option>']
         .concat(domains.map((domain) => `<option value="${domain.domain}">${domain.domain}</option>`));
     domainFilter.innerHTML = options.join("");
 }
 
 function filteredQuestions() {
-    if (!currentPayload) {
+    if (!currentPayload || !currentPayload.selected_candidate) {
         return [];
     }
 
+    const questions = currentPayload.selected_candidate.questions || [];
     const searchValue = searchInput.value.trim().toLowerCase();
     const domainValue = domainFilter.value;
     const statusValue = statusFilter.value;
 
-    return currentPayload.questions.filter((question) => {
+    return questions.filter((question) => {
         const matchesSearch = !searchValue
             || question.question_text.toLowerCase().includes(searchValue)
             || question.topic.toLowerCase().includes(searchValue);
@@ -109,13 +109,18 @@ function filteredQuestions() {
 }
 
 function renderQuestionTable() {
+    const selectedCandidate = currentPayload?.selected_candidate || {};
     const rows = filteredQuestions();
+    const hasQuestions = (selectedCandidate.questions || []).length > 0;
+    questionEmptyState.hidden = hasQuestions;
     questionTableBody.innerHTML = rows.map((question) => `
         <tr>
             <td>${question.question_id}</td>
             <td>${question.question_text}</td>
             <td>${question.domain}</td>
+            <td>${question.primary_skill || "-"}</td>
             <td>${question.topic}</td>
+            <td>${question.difficulty_label || question.difficulty} (${question.difficulty_rating || "-"}/5)</td>
             <td><span class="status-pill ${question.status}">${question.status}</span></td>
             <td>${formatNumber(question.marks_obtained)}/${formatNumber(question.full_marks)}</td>
             <td>${formatNumber(question.time_spent_seconds)}s</td>
@@ -123,31 +128,133 @@ function renderQuestionTable() {
     `).join("");
 }
 
-function bindMeta(payload, source) {
-    setText("studentName", payload.student.name);
-    setText("candidateId", String(payload.student.candidate_id));
-    setText("examName", payload.exam.name);
-    setText("generatedAt", formatDate(payload.generated_at));
-    setText("dataSource", source);
+function renderTopPerformer(payload) {
+    const top = payload.top_performer_analysis || {};
+    const courses = (top.recommended_courses || []).map((item) => item.course_name).join(", ");
+    topPerformerPanel.innerHTML = `
+        <h3>${top.candidate_name || "-"}</h3>
+        <p>${top.headline || "No top performer analysis is available."}</p>
+        <div class="detail-metric-grid">
+            <article class="detail-metric"><span class="meta-label">Rank</span><strong>#${top.rank || "-"}</strong></article>
+            <article class="detail-metric"><span class="meta-label">Accuracy</span><strong>${formatNumber(top.accuracy || 0)}%</strong></article>
+            <article class="detail-metric"><span class="meta-label">Marks</span><strong>${formatNumber(top.marks_percent || 0)}%</strong></article>
+            <article class="detail-metric"><span class="meta-label">Composite</span><strong>${formatNumber(top.composite_score || 0)}</strong></article>
+        </div>
+        <ul class="recommendation-list">${(top.insights || []).map((item) => `<li>${item}</li>`).join("")}</ul>
+        ${courses ? `<p class="support-text">Suggested LMS courses: ${courses}</p>` : ""}
+    `;
 }
 
-async function loadDashboard(forceRefresh = true) {
-    const response = await fetchDashboard(forceRefresh);
-    currentPayload = response.data;
+function renderAggregateInsights(payload) {
+    aggregateInsightList.innerHTML = (payload.aggregate_analysis?.insights || []).map((item) => `<li>${item}</li>`).join("");
+}
 
-    bindMeta(currentPayload, response.source);
+function renderCandidateList(payload) {
+    candidateList.innerHTML = (payload.ranked_candidates || []).map((candidate) => `
+        <button class="candidate-card ${candidate.candidate_id === payload.selected_candidate?.candidate_id ? "active" : ""}" data-candidate-id="${candidate.candidate_id}">
+            <div class="candidate-card-header">
+                <strong>#${candidate.rank} ${candidate.candidate_name}</strong>
+                <span class="tag">${candidate.has_full_analysis ? "Full Analysis" : "Summary Only"}</span>
+            </div>
+            <p>Accuracy ${formatNumber(candidate.accuracy)}% | Marks ${formatNumber(candidate.marks_percent)}% | Composite ${formatNumber(candidate.composite_score)}</p>
+        </button>
+    `).join("");
+
+    candidateList.querySelectorAll("[data-candidate-id]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            const nextId = Number(button.getAttribute("data-candidate-id"));
+            selectedCandidateId = Number.isFinite(nextId) ? nextId : null;
+            await loadDashboard(false, selectedCandidateId);
+        });
+    });
+}
+
+function renderSelectedCandidate(payload) {
+    const candidate = payload.selected_candidate || {};
+    const profile = candidate.profile || {};
+    const notes = candidate.notes || [];
+    const attempts = candidate.attempt_summaries || [];
+    const languages = (profile.languages || []).join(", ");
+    const sectionSummary = (profile.profile_sections || [])
+        .map((item) => `${item.section}: ${item.items}`)
+        .join(" | ");
+
+    selectedCandidatePanel.innerHTML = `
+        <div class="candidate-detail-header">
+            <div>
+                <h3>${candidate.candidate_name || "-"}</h3>
+                <p class="support-text">${profile.applied_position || "Applied role not available"}</p>
+            </div>
+            <span class="tag">${candidate.analysis_scope === "full" ? "Complete Analysis" : "Summary View"}</span>
+        </div>
+        <div class="detail-metric-grid">
+            <article class="detail-metric"><span class="meta-label">Rank</span><strong>#${candidate.rank || "-"}</strong></article>
+            <article class="detail-metric"><span class="meta-label">Accuracy</span><strong>${formatNumber(candidate.summary?.accuracy || 0)}%</strong></article>
+            <article class="detail-metric"><span class="meta-label">Marks</span><strong>${formatNumber(candidate.summary?.marks_percent || 0)}%</strong></article>
+            <article class="detail-metric"><span class="meta-label">Speed</span><strong>${formatNumber(candidate.summary?.speed_score || 0)}</strong></article>
+        </div>
+        <div class="detail-list">
+            <p><strong>Registration:</strong> ${profile.registration_number || "-"}</p>
+            <p><strong>Mobile:</strong> ${profile.mobile || "-"}</p>
+            <p><strong>Gender:</strong> ${profile.gender || "-"}</p>
+            <p><strong>Batch:</strong> ${profile.batch || "-"}</p>
+            <p><strong>Course:</strong> ${profile.course || "-"}</p>
+            <p><strong>Languages:</strong> ${languages || "-"}</p>
+            <p><strong>Profile Sections:</strong> ${sectionSummary || "-"}</p>
+        </div>
+        ${profile.computer_proficiency ? `<p class="support-text">${profile.computer_proficiency}</p>` : ""}
+        ${attempts.length ? `
+            <div class="detail-list">
+                <p><strong>Attempt History:</strong></p>
+                ${attempts.map((attempt) => `
+                    <p>${attempt.exam_name || "Assessment"}: ${formatNumber(attempt.marks_percent || 0)}% marks, ${formatNumber(attempt.accuracy || 0)}% accuracy, ${attempt.attempted_questions || 0}/${attempt.total_questions || 0} attempted</p>
+                `).join("")}
+            </div>
+        ` : ""}
+        ${notes.length ? `<ul class="recommendation-list">${notes.map((item) => `<li>${item}</li>`).join("")}</ul>` : ""}
+        <div class="tags-block">
+            <div>
+                <h3>Strengths</h3>
+                <div id="strengthTags" class="tag-row"></div>
+            </div>
+            <div>
+                <h3>Weaknesses</h3>
+                <div id="weaknessTags" class="tag-row"></div>
+            </div>
+        </div>
+    `;
+    renderTags("strengthTags", candidate.strengths || [], "strong");
+    renderTags("weaknessTags", candidate.weaknesses || [], "weak");
+}
+
+function bindMeta(payload) {
+    setText("examName", payload.exam?.name || "-");
+    setText("candidateCount", String(payload.overview?.total_candidates || 0));
+    setText("topPerformerMeta", payload.overview?.top_performer_name || "-");
+    setText("currentCandidateMeta", payload.overview?.current_candidate_name || "-");
+    setText("generatedAt", formatDate(payload.generated_at));
+    setText("dataSource", payload.source || "-");
+}
+
+async function loadDashboard(forceRefresh = false, nextSelectedCandidateId = null) {
+    currentPayload = await fetchDashboard(forceRefresh, nextSelectedCandidateId);
+    selectedCandidateId = currentPayload.selected_candidate?.candidate_id || nextSelectedCandidateId;
+
+    bindMeta(currentPayload);
     renderSummaryCards(currentPayload);
-    renderDomainFilter(currentPayload.domains);
-    renderTags("strengthTags", currentPayload.strengths, "strong");
-    renderTags("weaknessTags", currentPayload.weaknesses, "weak");
-    renderRecommendations(currentPayload.recommendations);
+    renderTopPerformer(currentPayload);
+    renderAggregateInsights(currentPayload);
+    renderCandidateList(currentPayload);
+    renderSelectedCandidate(currentPayload);
+    renderDomainFilter(currentPayload.selected_candidate || {});
+    renderRecommendations(currentPayload.selected_candidate?.recommendations || []);
+    renderCourseRecommendations(currentPayload.selected_candidate?.recommended_courses || []);
     renderQuestionTable();
-    renderRawApis(currentPayload.raw_apis);
     renderCharts(currentPayload);
 }
 
 document.getElementById("refreshButton").addEventListener("click", async () => {
-    await loadDashboard(true);
+    await loadDashboard(true, selectedCandidateId);
 });
 
 document.getElementById("csvButton").addEventListener("click", () => {
@@ -163,7 +270,6 @@ document.getElementById("pdfButton").addEventListener("click", () => {
     element.addEventListener("change", renderQuestionTable);
 });
 
-loadDashboard(true).catch((error) => {
+loadDashboard(false).catch((error) => {
     summaryCards.innerHTML = `<article class="summary-card"><h3>Error</h3><strong>Unable to load</strong><span>${error.message}</span></article>`;
-    rawApiGrid.innerHTML = "";
 });
