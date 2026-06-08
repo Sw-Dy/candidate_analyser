@@ -12,13 +12,28 @@ from app.services.recommendation import RecommendationService
 from app.services.skill_intelligence import SkillIntelligenceService
 
 
-DOMAIN_KEYWORDS = {
-    "Backend": ["api", "server", "database", "sql", "fastapi", "flask", "django"],
-    "Frontend": ["html", "css", "javascript", "react", "vue", "dom", "ui"],
-    "ML": ["model", "dataset", "training", "regression", "classification", "numpy"],
-    "Security": ["auth", "encryption", "xss", "csrf", "vulnerability", "token"],
-    "DevOps": ["docker", "kubernetes", "ci", "cd", "deployment", "pipeline", "linux"],
-}
+TOPIC_KEYWORDS = [
+    ("Backend", "HTTP 404", ["status code", "page not found", "404"]),
+    ("Backend", "URL Flow", ["type a url", "url in the browser", "url in browser", "dns", "http request"]),
+    ("Backend", "REST", ["rest api", "restful", "http methods", "get post put delete"]),
+    ("Backend", "API", ["api"]),
+    ("Backend", ".NET", ["c# framework", "asp.net", ".net core", "dot net"]),
+    ("Backend", "NoSQL", ["nosql", "mongodb", "mongo db", "mongo"]),
+    ("Backend", "SQL", ["sql", "query language"]),
+    ("Backend", "Database", ["database", "dbms", "table"]),
+    ("Backend", "Django", ["django"]),
+    ("Backend", "Server", ["server", "backend", "fastapi", "flask"]),
+    ("Frontend", "HTML/CSS", ["html", "css"]),
+    ("Frontend", "JavaScript", ["javascript", "dom"]),
+    ("Frontend", "React", ["react"]),
+    ("Frontend", "UI", ["frontend", "ui", "vue"]),
+    ("ML", "ML Models", ["model", "training", "regression", "classification", "numpy"]),
+    ("ML", "Datasets", ["dataset"]),
+    ("Security", "Authentication", ["auth", "token"]),
+    ("Security", "Web Security", ["encryption", "xss", "csrf", "vulnerability"]),
+    ("DevOps", "Containers", ["docker", "kubernetes"]),
+    ("DevOps", "Deployment Pipelines", ["ci", "cd", "deployment", "pipeline", "linux"]),
+]
 
 
 def _safe_float(value: Any) -> float:
@@ -56,15 +71,64 @@ def _normalize_domain(question: dict[str, Any], index: int) -> tuple[str, str, s
     text_parts = [str(question.get("Question_Text", ""))]
     options = question.get("Options", [])
     text_parts.extend(str(option.get("Option_Text", "")) for option in options)
-    corpus = " ".join(text_parts).lower()
+    corpus = re.sub(r"\s+", " ", " ".join(text_parts).lower()).strip()
 
-    for domain, keywords in DOMAIN_KEYWORDS.items():
+    for domain, topic, keywords in TOPIC_KEYWORDS:
         for keyword in keywords:
             if keyword in corpus:
-                return domain, keyword.title(), "keyword"
+                return domain, topic, "keyword"
 
     fallback_domain = DOMAIN_LABELS[index % len(DOMAIN_LABELS)]
-    return fallback_domain, "General Aptitude", "fallback"
+    return fallback_domain, _fallback_topic_label(corpus), "fallback"
+
+
+def _fallback_topic_label(corpus: str) -> str:
+    if any(word in corpus for word in ["aptitude", "logic", "reasoning", "pattern"]):
+        return "Reasoning"
+    if any(word in corpus for word in ["write", "explain", "describe"]):
+        return "Concept Explanation"
+    return "General Concepts"
+
+
+def _build_topic_strengths_and_weaknesses(question_rows: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+    topic_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "correct": 0, "wrong": 0})
+
+    for row in question_rows:
+        topic = str(row.get("topic") or row.get("domain") or "General Concepts").strip()
+        if not topic:
+            topic = "General Concepts"
+        stats = topic_stats[topic]
+        stats["total"] += 1
+        if row.get("is_correct"):
+            stats["correct"] += 1
+        else:
+            stats["wrong"] += 1
+
+    strengths = []
+    weaknesses = []
+    for topic, stats in topic_stats.items():
+        if stats["correct"] > stats["wrong"]:
+            strengths.append(
+                {
+                    "topic": topic,
+                    "label": f"{topic} ({stats['correct']}/{stats['total']} correct)",
+                    "total": stats["total"],
+                    "score": stats["correct"] / stats["total"],
+                }
+            )
+        elif stats["wrong"] > stats["correct"]:
+            weaknesses.append(
+                {
+                    "topic": topic,
+                    "label": f"{topic} ({stats['wrong']}/{stats['total']} wrong)",
+                    "total": stats["total"],
+                    "score": stats["wrong"] / stats["total"],
+                }
+            )
+
+    strengths.sort(key=lambda item: (item["score"], item["total"], item["topic"]), reverse=True)
+    weaknesses.sort(key=lambda item: (item["score"], item["total"], item["topic"]), reverse=True)
+    return [item["label"] for item in strengths], [item["label"] for item in weaknesses]
 
 
 def _extract_answers(question: dict[str, Any]) -> tuple[str, str]:
@@ -494,21 +558,12 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
                 )
                 if domain_attempted
                 else 0.0,
-                "classification": _classify_strength(domain_accuracy),
+                "classification": _classify_strength(domain_accuracy) if rows else "No Data",
                 "weak_topics": [topic for topic, _ in topic_counter.most_common(3)],
             }
         )
 
-    ranked_domains = sorted(domain_rows, key=lambda row: row["accuracy"], reverse=True)
-    strengths = [row["domain"] for row in ranked_domains if row["classification"] == "Strong"][:3]
-    if not strengths and ranked_domains:
-        strengths = [ranked_domains[0]["domain"]]
-
-    weaknesses = [
-        row["domain"] for row in sorted(domain_rows, key=lambda row: row["accuracy"]) if row["total_questions"]
-    ][:3]
-    if not weaknesses:
-        weaknesses = ["General Practice"]
+    strengths, weaknesses = _build_topic_strengths_and_weaknesses(question_rows)
 
     metadata = raw_payload.get("metadata", {})
     candidate = raw_payload.get("candidate", {})
@@ -593,10 +648,16 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
     all_skill_labels = skill_result.get("skills", [])
     for row in payload["questions"]:
         intelligence = question_intelligence.get(row["question_id"], {})
+        if intelligence.get("domain"):
+            row["domain"] = intelligence["domain"]
+        if intelligence.get("topic"):
+            row["topic"] = intelligence["topic"]
         row["primary_skill"] = intelligence.get("primary_skill") or row["domain"]
         row["supporting_skills"] = intelligence.get("supporting_skills", [])
         row["difficulty_label"] = intelligence.get("difficulty_label", row["difficulty"])
         row["difficulty_rating"] = intelligence.get("difficulty_rating", 3)
+
+    payload["strengths"], payload["weaknesses"] = _build_topic_strengths_and_weaknesses(payload["questions"])
 
     payload["skill_radar"] = _build_skill_radar(
         question_rows=payload["questions"],

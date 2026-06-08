@@ -1,5 +1,5 @@
-import { downloadCsv, fetchDashboard } from "./api.js?v=20260605-2";
-import { renderCharts } from "./charts.js?v=20260605-2";
+import { downloadCsv, fetchDashboard } from "./api.js?v=20260608-3";
+import { renderCharts } from "./charts.js?v=20260608-3";
 
 const summaryCards = document.getElementById("summaryCards");
 const questionTableBody = document.getElementById("questionTableBody");
@@ -63,6 +63,99 @@ function renderTags(id, values, className) {
     container.innerHTML = (values || []).map((value) => `<span class="tag ${className}">${value}</span>`).join("");
 }
 
+const topicRules = [
+    { topic: "HTTP 404", skill: "HTTP", keywords: ["status code", "page not found", "404"] },
+    { topic: "URL Flow", skill: "Web", keywords: ["type a url", "url in the browser", "url in browser", "dns", "http request"] },
+    { topic: "REST", skill: "REST", keywords: ["rest api", "restful", "http methods", "get post put delete"] },
+    { topic: "API", skill: "API", keywords: ["api"] },
+    { topic: ".NET", skill: ".NET", keywords: ["c# framework", "asp.net", ".net core", "dot net"] },
+    { topic: "NoSQL", skill: "NoSQL", keywords: ["nosql", "mongodb", "mongo db", "mongo"] },
+    { topic: "SQL", skill: "SQL", keywords: ["sql", "query language"] },
+    { topic: "Database", keywords: ["database", "dbms", "table"] },
+    { topic: "Django", keywords: ["django"] },
+    { topic: "HTML/CSS", skill: "HTML/CSS", keywords: ["html", "css"] },
+    { topic: "JavaScript", skill: "JavaScript", keywords: ["javascript", "dom"] },
+    { topic: "React", skill: "React", keywords: ["react"] },
+    { topic: "UI", skill: "UI", keywords: ["frontend", "ui", "vue"] },
+];
+
+function findTopicRule(question) {
+    const existingTopic = String(question.topic || "").trim();
+    const text = `${question.question_text || ""} ${existingTopic}`.toLowerCase().replace(/\s+/g, " ");
+
+    return topicRules.find((rule) => rule.keywords.some((keyword) => text.includes(keyword)));
+}
+
+function inferPreciseTopic(question) {
+    const existingTopic = String(question.topic || "").trim();
+    const rule = findTopicRule(question);
+    if (rule) {
+        return rule.topic;
+    }
+
+    if (["", "General Aptitude", "General Concepts"].includes(existingTopic)) {
+        return "General";
+    }
+    return existingTopic.split(/\s+/).slice(0, 3).join(" ");
+}
+
+function inferPreciseSkill(question) {
+    const currentSkill = String(question.primary_skill || "").trim();
+    const broadSkills = ["Backend", "Frontend", "Security", "DevOps", "ML", "Programming", "Problem Solving"];
+    const rule = findTopicRule(question);
+    if (rule?.skill && broadSkills.includes(currentSkill)) {
+        return rule.skill;
+    }
+    return currentSkill || rule?.skill || "-";
+}
+
+function normalizeCandidateQuestionTopics(candidate) {
+    if (!candidate.questions?.length) {
+        return;
+    }
+
+    candidate.questions = candidate.questions.map((question) => ({
+        ...question,
+        primary_skill: inferPreciseSkill(question),
+        topic: inferPreciseTopic(question),
+    }));
+}
+
+function buildTopicTags(questions) {
+    const statsByTopic = new Map();
+    questions.forEach((question) => {
+        const topic = inferPreciseTopic(question);
+        const stats = statsByTopic.get(topic) || { total: 0, correct: 0, wrong: 0 };
+        stats.total += 1;
+        if (question.is_correct === true || question.status === "Correct") {
+            stats.correct += 1;
+        } else {
+            stats.wrong += 1;
+        }
+        statsByTopic.set(topic, stats);
+    });
+
+    const strengths = [];
+    const weaknesses = [];
+    statsByTopic.forEach((stats, topic) => {
+        const score = Math.max(stats.correct, stats.wrong) / stats.total;
+        const item = { topic, total: stats.total, score };
+        if (stats.correct > stats.wrong) {
+            strengths.push({ ...item, label: `${topic} (${stats.correct}/${stats.total} correct)` });
+        } else if (stats.wrong > stats.correct) {
+            weaknesses.push({ ...item, label: `${topic} (${stats.wrong}/${stats.total} wrong)` });
+        }
+    });
+
+    const sortByMajority = (left, right) =>
+        right.score - left.score || right.total - left.total || left.topic.localeCompare(right.topic);
+
+    return {
+        strengths: strengths.sort(sortByMajority).map((item) => item.label),
+        weaknesses: weaknesses.sort(sortByMajority).map((item) => item.label),
+    };
+}
+
 function renderRecommendations(items) {
     recommendationList.innerHTML = items.length
         ? items.map((item) => `<li>${item}</li>`).join("")
@@ -117,9 +210,9 @@ function renderQuestionTable() {
         <tr>
             <td>${question.question_id}</td>
             <td>${question.question_text}</td>
-            <td>${question.domain}</td>
+            <td><strong>${question.topic}</strong></td>
             <td>${question.primary_skill || "-"}</td>
-            <td>${question.topic}</td>
+            <td>${question.domain}</td>
             <td>${question.difficulty_label || question.difficulty} (${question.difficulty_rating || "-"}/5)</td>
             <td><span class="status-pill ${question.status}">${question.status}</span></td>
             <td>${formatNumber(question.marks_obtained)}/${formatNumber(question.full_marks)}</td>
@@ -171,9 +264,11 @@ function renderCandidateList(payload) {
 
 function renderSelectedCandidate(payload) {
     const candidate = payload.selected_candidate || {};
+    normalizeCandidateQuestionTopics(candidate);
     const profile = candidate.profile || {};
     const notes = candidate.notes || [];
     const attempts = candidate.attempt_summaries || [];
+    const topicTags = candidate.questions?.length ? buildTopicTags(candidate.questions) : null;
     const languages = (profile.languages || []).join(", ");
     const sectionSummary = (profile.profile_sections || [])
         .map((item) => `${item.section}: ${item.items}`)
@@ -223,8 +318,8 @@ function renderSelectedCandidate(payload) {
             </div>
         </div>
     `;
-    renderTags("strengthTags", candidate.strengths || [], "strong");
-    renderTags("weaknessTags", candidate.weaknesses || [], "weak");
+    renderTags("strengthTags", topicTags?.strengths || candidate.strengths || [], "strong");
+    renderTags("weaknessTags", topicTags?.weaknesses || candidate.weaknesses || [], "weak");
 }
 
 function bindMeta(payload) {

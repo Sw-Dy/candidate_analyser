@@ -34,6 +34,25 @@ SKILL_KEYWORDS = {
 }
 
 
+CONCISE_TOPIC_RULES = [
+    ("HTTP 404", ["status code", "page not found", "404"]),
+    ("URL Flow", ["type a url", "url in the browser", "url in browser", "dns", "http request"]),
+    ("REST", ["rest api", "restful", "http methods", "get post put delete"]),
+    ("API", ["api"]),
+    (".NET", ["c# framework", "asp.net", ".net core", "dot net"]),
+    ("NoSQL", ["nosql", "mongodb", "mongo db", "mongo"]),
+    ("SQL", ["sql", "query language"]),
+    ("Database", ["database", "dbms", "table"]),
+    ("Django", ["django"]),
+    ("HTML/CSS", ["html", "css"]),
+    ("JavaScript", ["javascript", "dom"]),
+    ("React", ["react"]),
+    ("UI", ["frontend", "ui", "vue"]),
+]
+
+BROAD_SKILLS = set(DOMAIN_LABELS) | {"Programming", "Problem Solving", "Reasoning", "General Aptitude"}
+
+
 class SkillIntelligenceService:
     def __init__(self) -> None:
         self.timeout = httpx.Timeout(30.0)
@@ -103,20 +122,27 @@ class SkillIntelligenceService:
         instructions = {
             "skills": [
                 "Return 5 to 8 concise skill labels relevant to the role and assessment.",
-                "Prefer labels like Programming, Database, Problem Solving, Communication, Reasoning, Backend, Frontend, ML, Design.",
+                "Prefer specialised labels like HTTP, SQL, NoSQL, REST, DNS, .NET, JavaScript, React, Database.",
+                "Avoid broad labels like Backend, Frontend, Programming, or Problem Solving when a precise technical skill is visible.",
             ],
             "questions": [
                 "For every question, assign one primary_skill and up to two supporting_skills from the generated skill labels.",
+                "Add topic as a concise specialised label of 1 to 3 words based on the question text, not a broad domain.",
+                "Good topic examples: HTTP 404, SQL, NoSQL, REST, URL Flow, .NET, DNS, HTML/CSS.",
+                "Never use Backend, Frontend, Security, DevOps, ML, General Aptitude, or General Concepts as topic.",
+                "Add domain using only one of: Backend, Frontend, ML, Security, DevOps.",
                 "Add difficulty_label using only Easy, Intermediate, Hard.",
                 "Add difficulty_rating as an integer from 1 to 5.",
             ],
             "format": {
-                "skills": ["Programming", "Problem Solving"],
+                "skills": ["HTTP", "SQL"],
                 "questions": [
                     {
                         "question_id": 1,
-                        "primary_skill": "Programming",
-                        "supporting_skills": ["Problem Solving"],
+                        "domain": "Backend",
+                        "topic": "HTTP 404",
+                        "primary_skill": "HTTP",
+                        "supporting_skills": ["Web"],
                         "difficulty_label": "Intermediate",
                         "difficulty_rating": 3,
                     }
@@ -133,7 +159,7 @@ class SkillIntelligenceService:
 
     def _parse_response(self, body: dict[str, Any]) -> dict[str, Any]:
         response_text = str(body.get("response", "")).strip()
-        parsed = json.loads(response_text)
+        parsed = json.loads(self._extract_json(response_text))
         skills = [str(item).strip() for item in parsed.get("skills", []) if str(item).strip()]
         question_items = parsed.get("questions", [])
         if not skills or not isinstance(question_items, list):
@@ -142,6 +168,18 @@ class SkillIntelligenceService:
             "skills": skills[:8],
             "questions": [self._normalize_question_item(item) for item in question_items if isinstance(item, dict)],
         }
+
+    def _extract_json(self, response_text: str) -> str:
+        cleaned = response_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+        if cleaned.startswith("{"):
+            return cleaned
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if not match:
+            raise json.JSONDecodeError("No JSON object found", response_text, 0)
+        return match.group(0)
 
     def _fallback_enrichment(
         self,
@@ -168,7 +206,9 @@ class SkillIntelligenceService:
 
         selected_skills = list(dict.fromkeys(selected_skills))[:8]
         question_items = [self._fallback_question_item(question, selected_skills) for question in questions]
-        return {"skills": selected_skills, "questions": question_items}
+        question_skills = [item["primary_skill"] for item in question_items if item.get("primary_skill")]
+        skills = list(dict.fromkeys(question_skills + selected_skills))[:8]
+        return {"skills": skills, "questions": question_items}
 
     def _fallback_question_item(
         self,
@@ -178,16 +218,17 @@ class SkillIntelligenceService:
         corpus = " ".join(
             str(question.get(field, "")) for field in ["question_text", "domain", "topic", "question_type"]
         ).lower()
-        primary_skill = question.get("domain") if question.get("domain") in selected_skills else None
+        topic = self._fallback_topic(question)
+        primary_skill = topic if topic not in {"General", "Concepts"} else None
         supporting_skills: list[str] = []
 
         if primary_skill is None:
             for skill in selected_skills:
-                if any(keyword in corpus for keyword in SKILL_KEYWORDS.get(skill, [])):
+                if skill not in BROAD_SKILLS and any(keyword in corpus for keyword in SKILL_KEYWORDS.get(skill, [])):
                     primary_skill = skill
                     break
         if primary_skill is None:
-            primary_skill = selected_skills[0]
+            primary_skill = question.get("domain") if question.get("domain") in DOMAIN_LABELS else selected_skills[0]
 
         for skill in selected_skills:
             if skill == primary_skill:
@@ -200,6 +241,8 @@ class SkillIntelligenceService:
         difficulty_rating = self._fallback_difficulty_rating(question)
         return {
             "question_id": question["question_id"],
+            "domain": question.get("domain") if question.get("domain") in DOMAIN_LABELS else None,
+            "topic": topic,
             "primary_skill": primary_skill,
             "supporting_skills": supporting_skills,
             "difficulty_label": self._difficulty_label(difficulty_rating),
@@ -210,6 +253,10 @@ class SkillIntelligenceService:
         rating = int(item.get("difficulty_rating") or 3)
         rating = max(1, min(5, rating))
         primary_skill = str(item.get("primary_skill") or "").strip() or "Problem Solving"
+        topic = self._normalize_topic(str(item.get("topic") or primary_skill).strip())
+        if primary_skill in BROAD_SKILLS and topic != "General":
+            primary_skill = self._skill_from_topic(topic)
+        domain = self._normalize_domain_label(str(item.get("domain") or ""))
         supporting_skills = [
             str(skill).strip()
             for skill in item.get("supporting_skills", [])
@@ -220,11 +267,66 @@ class SkillIntelligenceService:
             label = self._difficulty_label(rating)
         return {
             "question_id": int(item.get("question_id") or 0),
+            "domain": domain,
+            "topic": topic,
             "primary_skill": primary_skill,
             "supporting_skills": supporting_skills,
             "difficulty_label": label,
             "difficulty_rating": rating,
         }
+
+    def _fallback_topic(self, question: dict[str, Any]) -> str:
+        corpus = " ".join(
+            str(question.get(field, "")) for field in ["question_text", "domain", "topic", "question_type"]
+        ).lower()
+        for topic, keywords in CONCISE_TOPIC_RULES:
+            if any(keyword in corpus for keyword in keywords):
+                return topic
+        current_topic = str(question.get("topic") or "").strip()
+        return self._normalize_topic(current_topic or "General")
+
+    def _normalize_topic(self, topic: str) -> str:
+        topic = re.sub(r"\s+", " ", topic).strip()
+        aliases = {
+            "HTTP Status Codes": "HTTP 404",
+            "HTTP Status": "HTTP",
+            "Web Request Lifecycle": "URL Flow",
+            "REST API": "REST",
+            "API Concepts": "API",
+            ".NET Framework": ".NET",
+            "NoSQL Databases": "NoSQL",
+            "User Interface": "UI",
+            "Machine Learning Models": "ML Models",
+            "Server-Side Development": "Server",
+        }
+        topic = aliases.get(topic, topic)
+        broad_topics = {"Backend", "Frontend", "Security", "Devops", "DevOps", "Ml", "ML"}
+        generic_topics = {"", "General Aptitude", "General Concepts", "Problem Solving", "Programming"}
+        if topic in broad_topics or topic in generic_topics:
+            return "General"
+        words = topic.split()
+        return " ".join(words[:3])
+
+    def _normalize_domain_label(self, domain: str) -> str:
+        cleaned = re.sub(r"\s+", " ", domain).strip().lower()
+        for label in DOMAIN_LABELS:
+            if cleaned == label.lower():
+                return label
+        return ""
+
+    def _skill_from_topic(self, topic: str) -> str:
+        skill_map = {
+            "HTTP 404": "HTTP",
+            "URL Flow": "Web",
+            "REST": "REST",
+            "API": "API",
+            ".NET": ".NET",
+            "NoSQL": "NoSQL",
+            "SQL": "SQL",
+            "HTML/CSS": "HTML/CSS",
+            "UI": "UI",
+        }
+        return skill_map.get(topic, topic)
 
     def _fallback_difficulty_rating(self, question: dict[str, Any]) -> int:
         text = str(question.get("question_text", ""))
