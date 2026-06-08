@@ -36,18 +36,25 @@ SKILL_KEYWORDS = {
 
 CONCISE_TOPIC_RULES = [
     ("HTTP 404", ["status code", "page not found", "404"]),
+    ("DNS", ["domain name system", "dns"]),
     ("URL Flow", ["type a url", "url in the browser", "url in browser", "dns", "http request"]),
     ("REST", ["rest api", "restful", "http methods", "get post put delete"]),
     ("API", ["api"]),
     (".NET", ["c# framework", "asp.net", ".net core", "dot net"]),
+    ("MVC", ["mvc", "model-view-controller", "model view controller"]),
+    ("DI", ["dependency injection"]),
+    ("Algorithm", ["algorithm"]),
     ("NoSQL", ["nosql", "mongodb", "mongo db", "mongo"]),
     ("SQL", ["sql", "query language"]),
     ("Database", ["database", "dbms", "table"]),
     ("Django", ["django"]),
+    ("Responsive", ["responsive design", "reponvide design", "responsvide design"]),
+    ("Hex Color", ["hexcode", "hex code", "hexadecimal code"]),
     ("HTML/CSS", ["html", "css"]),
     ("JavaScript", ["javascript", "dom"]),
     ("React", ["react"]),
     ("UI", ["frontend", "ui", "vue"]),
+    ("Git", ["what is git", " git?", "git is", "git "]),
 ]
 
 BROAD_SKILLS = set(DOMAIN_LABELS) | {"Programming", "Problem Solving", "Reasoning", "General Aptitude"}
@@ -128,7 +135,7 @@ class SkillIntelligenceService:
             "questions": [
                 "For every question, assign one primary_skill and up to two supporting_skills from the generated skill labels.",
                 "Add topic as a concise specialised label of 1 to 3 words based on the question text, not a broad domain.",
-                "Good topic examples: HTTP 404, SQL, NoSQL, REST, URL Flow, .NET, DNS, HTML/CSS.",
+                "Good topic examples: HTTP 404, SQL, NoSQL, REST, URL Flow, DNS, .NET, MVC, DI, Git, Responsive, Hex Color.",
                 "Never use Backend, Frontend, Security, DevOps, ML, General Aptitude, or General Concepts as topic.",
                 "Add domain using only one of: Backend, Frontend, ML, Security, DevOps.",
                 "Add difficulty_label using only Easy, Intermediate, Hard.",
@@ -291,9 +298,14 @@ class SkillIntelligenceService:
             "HTTP Status Codes": "HTTP 404",
             "HTTP Status": "HTTP",
             "Web Request Lifecycle": "URL Flow",
+            "Domain Name System": "DNS",
             "REST API": "REST",
             "API Concepts": "API",
             ".NET Framework": ".NET",
+            "Dependency Injection": "DI",
+            "Responsive Design": "Responsive",
+            "Hex Code": "Hex Color",
+            "Hexcode": "Hex Color",
             "NoSQL Databases": "NoSQL",
             "User Interface": "UI",
             "Machine Learning Models": "ML Models",
@@ -317,14 +329,21 @@ class SkillIntelligenceService:
     def _skill_from_topic(self, topic: str) -> str:
         skill_map = {
             "HTTP 404": "HTTP",
+            "DNS": "DNS",
             "URL Flow": "Web",
             "REST": "REST",
             "API": "API",
             ".NET": ".NET",
+            "MVC": "MVC",
+            "DI": "DI",
+            "Algorithm": "Algorithm",
             "NoSQL": "NoSQL",
             "SQL": "SQL",
+            "Responsive": "Responsive",
+            "Hex Color": "CSS",
             "HTML/CSS": "HTML/CSS",
             "UI": "UI",
+            "Git": "Git",
         }
         return skill_map.get(topic, topic)
 

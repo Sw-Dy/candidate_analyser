@@ -1,5 +1,5 @@
-import { downloadCsv, fetchDashboard } from "./api.js?v=20260608-3";
-import { renderCharts } from "./charts.js?v=20260608-3";
+import { downloadCsv, fetchDashboard } from "./api.js?v=20260608-4";
+import { renderCharts } from "./charts.js?v=20260608-4";
 
 const summaryCards = document.getElementById("summaryCards");
 const questionTableBody = document.getElementById("questionTableBody");
@@ -65,18 +65,25 @@ function renderTags(id, values, className) {
 
 const topicRules = [
     { topic: "HTTP 404", skill: "HTTP", keywords: ["status code", "page not found", "404"] },
+    { topic: "DNS", skill: "DNS", keywords: ["domain name system", "dns"] },
     { topic: "URL Flow", skill: "Web", keywords: ["type a url", "url in the browser", "url in browser", "dns", "http request"] },
     { topic: "REST", skill: "REST", keywords: ["rest api", "restful", "http methods", "get post put delete"] },
     { topic: "API", skill: "API", keywords: ["api"] },
     { topic: ".NET", skill: ".NET", keywords: ["c# framework", "asp.net", ".net core", "dot net"] },
+    { topic: "MVC", skill: "MVC", keywords: ["mvc", "model-view-controller", "model view controller"] },
+    { topic: "DI", skill: "DI", keywords: ["dependency injection"] },
+    { topic: "Algorithm", skill: "Algorithm", keywords: ["algorithm"] },
     { topic: "NoSQL", skill: "NoSQL", keywords: ["nosql", "mongodb", "mongo db", "mongo"] },
     { topic: "SQL", skill: "SQL", keywords: ["sql", "query language"] },
     { topic: "Database", keywords: ["database", "dbms", "table"] },
     { topic: "Django", keywords: ["django"] },
+    { topic: "Responsive", skill: "Responsive", keywords: ["responsive design", "reponvide design", "responsvide design"] },
+    { topic: "Hex Color", skill: "CSS", keywords: ["hexcode", "hex code", "hexadecimal code"] },
     { topic: "HTML/CSS", skill: "HTML/CSS", keywords: ["html", "css"] },
     { topic: "JavaScript", skill: "JavaScript", keywords: ["javascript", "dom"] },
     { topic: "React", skill: "React", keywords: ["react"] },
     { topic: "UI", skill: "UI", keywords: ["frontend", "ui", "vue"] },
+    { topic: "Git", skill: "Git", keywords: ["what is git", " git?", "git is", "git "] },
 ];
 
 function findTopicRule(question) {

@@ -14,15 +14,21 @@ from app.services.skill_intelligence import SkillIntelligenceService
 
 TOPIC_KEYWORDS = [
     ("Backend", "HTTP 404", ["status code", "page not found", "404"]),
+    ("Backend", "DNS", ["domain name system", "dns"]),
     ("Backend", "URL Flow", ["type a url", "url in the browser", "url in browser", "dns", "http request"]),
     ("Backend", "REST", ["rest api", "restful", "http methods", "get post put delete"]),
     ("Backend", "API", ["api"]),
     ("Backend", ".NET", ["c# framework", "asp.net", ".net core", "dot net"]),
+    ("Backend", "MVC", ["mvc", "model-view-controller", "model view controller"]),
+    ("Backend", "DI", ["dependency injection"]),
+    ("Backend", "Algorithm", ["algorithm"]),
     ("Backend", "NoSQL", ["nosql", "mongodb", "mongo db", "mongo"]),
     ("Backend", "SQL", ["sql", "query language"]),
     ("Backend", "Database", ["database", "dbms", "table"]),
     ("Backend", "Django", ["django"]),
     ("Backend", "Server", ["server", "backend", "fastapi", "flask"]),
+    ("Frontend", "Responsive", ["responsive design", "reponvide design", "responsvide design"]),
+    ("Frontend", "Hex Color", ["hexcode", "hex code", "hexadecimal code"]),
     ("Frontend", "HTML/CSS", ["html", "css"]),
     ("Frontend", "JavaScript", ["javascript", "dom"]),
     ("Frontend", "React", ["react"]),
@@ -33,7 +39,32 @@ TOPIC_KEYWORDS = [
     ("Security", "Web Security", ["encryption", "xss", "csrf", "vulnerability"]),
     ("DevOps", "Containers", ["docker", "kubernetes"]),
     ("DevOps", "Deployment Pipelines", ["ci", "cd", "deployment", "pipeline", "linux"]),
+    ("DevOps", "Git", ["what is git", " git?", "git is", "git "]),
 ]
+
+TOPIC_SKILLS = {
+    "HTTP 404": "HTTP",
+    "DNS": "DNS",
+    "URL Flow": "Web",
+    "REST": "REST",
+    "API": "API",
+    ".NET": ".NET",
+    "MVC": "MVC",
+    "DI": "DI",
+    "Algorithm": "Algorithm",
+    "NoSQL": "NoSQL",
+    "SQL": "SQL",
+    "Database": "Database",
+    "Responsive": "Responsive",
+    "Hex Color": "CSS",
+    "HTML/CSS": "HTML/CSS",
+    "JavaScript": "JavaScript",
+    "React": "React",
+    "UI": "UI",
+    "ML Models": "ML",
+    "Datasets": "ML",
+    "Git": "Git",
+}
 
 
 def _safe_float(value: Any) -> float:
@@ -88,6 +119,29 @@ def _fallback_topic_label(corpus: str) -> str:
     if any(word in corpus for word in ["write", "explain", "describe"]):
         return "Concept Explanation"
     return "General Concepts"
+
+
+def _apply_precise_question_labels(row: dict[str, Any]) -> None:
+    corpus = re.sub(
+        r"\s+",
+        " ",
+        " ".join(
+            str(row.get(field, ""))
+            for field in ["question_text", "topic"]
+        ).lower(),
+    ).strip()
+
+    for domain, topic, keywords in TOPIC_KEYWORDS:
+        if any(keyword in corpus for keyword in keywords):
+            row["domain"] = domain
+            row["topic"] = topic
+            row["primary_skill"] = TOPIC_SKILLS.get(topic, row.get("primary_skill") or domain)
+            return
+
+    if str(row.get("topic") or "").strip() in {"", "General", "General Concepts", "General Aptitude"}:
+        row["topic"] = "Concept"
+    if str(row.get("primary_skill") or "").strip() in {"", "Backend", "Frontend", "Security", "DevOps", "ML"}:
+        row["primary_skill"] = TOPIC_SKILLS.get(row["topic"], row["primary_skill"])
 
 
 def _build_topic_strengths_and_weaknesses(question_rows: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
@@ -656,6 +710,7 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
         row["supporting_skills"] = intelligence.get("supporting_skills", [])
         row["difficulty_label"] = intelligence.get("difficulty_label", row["difficulty"])
         row["difficulty_rating"] = intelligence.get("difficulty_rating", 3)
+        _apply_precise_question_labels(row)
 
     payload["strengths"], payload["weaknesses"] = _build_topic_strengths_and_weaknesses(payload["questions"])
 

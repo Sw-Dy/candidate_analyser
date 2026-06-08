@@ -3,6 +3,8 @@ from __future__ import annotations
 from statistics import mean
 from typing import Any
 
+from app.services.analytics import _apply_precise_question_labels
+
 
 def build_aggregate_dashboard(
     analysis_payload: dict[str, Any],
@@ -159,13 +161,15 @@ def _build_multi_selected_candidate_detail(
     for attempt in selected_entry.get("attempts", []):
         exam = attempt.get("exam", {})
         for question in attempt.get("questions", []):
-            questions.append(
-                {
-                    **question,
-                    "exam_id": exam.get("exam_id"),
-                    "exam_name": exam.get("name"),
-                }
-            )
+            question_row = {
+                **question,
+                "exam_id": exam.get("exam_id"),
+                "exam_name": exam.get("name"),
+            }
+            _apply_precise_question_labels(question_row)
+            questions.append(question_row)
+
+    strengths, weaknesses = _build_topic_strengths_and_weaknesses(questions)
 
     return {
         "candidate_id": candidate_id,
@@ -199,13 +203,54 @@ def _build_multi_selected_candidate_detail(
         "attempt_summaries": selected_entry.get("attempt_summaries", []),
         "domains": primary.get("domains", []),
         "skill_radar": primary.get("skill_radar", {}),
-        "strengths": primary.get("strengths", []),
-        "weaknesses": primary.get("weaknesses", []),
+        "strengths": strengths,
+        "weaknesses": weaknesses,
         "recommendations": primary.get("recommendations", []),
         "recommended_courses": primary.get("recommended_courses", []),
         "questions": questions,
         "notes": [],
     }
+
+
+def _build_topic_strengths_and_weaknesses(questions: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+    stats_by_topic: dict[str, dict[str, int]] = {}
+    for question in questions:
+        topic = str(question.get("topic") or question.get("primary_skill") or "General").strip() or "General"
+        stats = stats_by_topic.setdefault(topic, {"total": 0, "correct": 0, "wrong": 0})
+        stats["total"] += 1
+        if question.get("is_correct") is True or question.get("status") == "Correct":
+            stats["correct"] += 1
+        else:
+            stats["wrong"] += 1
+
+    strengths = []
+    weaknesses = []
+    for topic, stats in stats_by_topic.items():
+        if stats["correct"] > stats["wrong"]:
+            strengths.append(
+                {
+                    "topic": topic,
+                    "label": f"{topic} ({stats['correct']}/{stats['total']} correct)",
+                    "total": stats["total"],
+                    "score": stats["correct"] / stats["total"],
+                }
+            )
+        elif stats["wrong"] > stats["correct"]:
+            weaknesses.append(
+                {
+                    "topic": topic,
+                    "label": f"{topic} ({stats['wrong']}/{stats['total']} wrong)",
+                    "total": stats["total"],
+                    "score": stats["wrong"] / stats["total"],
+                }
+            )
+
+    def sort_key(item: dict[str, Any]) -> tuple[float, int, str]:
+        return (float(item["score"]), int(item["total"]), str(item["topic"]))
+
+    strengths.sort(key=sort_key, reverse=True)
+    weaknesses.sort(key=sort_key, reverse=True)
+    return [item["label"] for item in strengths], [item["label"] for item in weaknesses]
 
 
 def _build_multi_top_performer_analysis(
