@@ -426,7 +426,7 @@ It draws:
 
 ### `static/css/styles.css`
 
-All dashboard styling.
+All dashboard styling. 
 
 ## Backend Files
 
@@ -478,7 +478,7 @@ Responsibilities:
 
 ### `app/services/analytics.py`
 
-Core analysis engine.
+Core analysis engine. 
 
 Responsibilities:
 

@@ -12,12 +12,14 @@ def build_aggregate_dashboard(
     *,
     source: str,
     selected_candidate_id: int | None = None,
+    selected_exam_id: int | None = None,
 ) -> dict[str, Any]:
     if analysis_payload.get("analysis_scope") == "multi_candidate":
         return _build_multi_candidate_dashboard(
             analysis_payload,
             source=source,
             selected_candidate_id=selected_candidate_id,
+            selected_exam_id=selected_exam_id,
         )
 
     rankings = list(analysis_payload.get("rankings", []))
@@ -100,6 +102,7 @@ def _build_multi_candidate_dashboard(
     *,
     source: str,
     selected_candidate_id: int | None,
+    selected_exam_id: int | None,
 ) -> dict[str, Any]:
     ranked_candidates = list(analysis_payload.get("ranked_candidates", []))
     candidate_analyses = analysis_payload.get("candidate_analyses", {})
@@ -111,16 +114,18 @@ def _build_multi_candidate_dashboard(
     elif selected_entry is None:
         selected_entry = {}
     selected_candidate = _build_multi_selected_candidate_detail(selected_entry, ranked_candidates)
+    selected_exam = _build_multi_exam_summary(selected_entry, selected_exam_id)
     aggregate_analysis = _build_multi_aggregate_analysis(
         ranked_candidates=ranked_candidates,
         attempt_count=int(analysis_payload.get("attempt_count") or 0),
+        exam_name=selected_exam.get("name", "All available candidate attempts"),
     )
     top_performer_analysis = _build_multi_top_performer_analysis(top_performer, selected_entry)
 
     return {
         "generated_at": analysis_payload.get("generated_at"),
         "source": source,
-        "exam": {"name": "All available candidate attempts", "exam_id": 0},
+        "exam": selected_exam,
         "overview": {
             "total_candidates": len(ranked_candidates),
             "top_performer_name": top_performer.get("candidate_name", "Unknown Candidate"),
@@ -144,6 +149,16 @@ def _build_multi_candidate_dashboard(
             "accuracy_scores": [item.get("accuracy", 0) for item in ranked_candidates[:10]],
         },
     }
+
+
+def _build_multi_exam_summary(selected_entry: dict[str, Any], selected_exam_id: int | None) -> dict[str, Any]:
+    primary_attempt = selected_entry.get("primary_attempt", {})
+    exam = dict(primary_attempt.get("exam", {}))
+    if exam:
+        return exam
+    if selected_exam_id is not None:
+        return {"name": f"Exam {selected_exam_id}", "exam_id": selected_exam_id}
+    return {"name": "All available candidate attempts", "exam_id": 0}
 
 
 def _build_multi_selected_candidate_detail(
@@ -283,6 +298,7 @@ def _build_multi_aggregate_analysis(
     *,
     ranked_candidates: list[dict[str, Any]],
     attempt_count: int,
+    exam_name: str,
 ) -> dict[str, Any]:
     accuracies = [float(item.get("accuracy") or 0) for item in ranked_candidates]
     marks = [float(item.get("marks_percent") or 0) for item in ranked_candidates]
@@ -293,7 +309,7 @@ def _build_multi_aggregate_analysis(
     strong_count = sum(1 for value in accuracies if value >= 80)
     at_risk_count = sum(1 for value in accuracies if value < 50)
     return {
-        "headline": "Cohort overview for all available attempts",
+        "headline": f"Cohort overview for {exam_name}",
         "metrics": {
             "total_candidates": len(ranked_candidates),
             "total_attempts": attempt_count,
@@ -305,7 +321,7 @@ def _build_multi_aggregate_analysis(
             "at_risk_candidates": at_risk_count,
         },
         "insights": [
-            f"The live corpus currently includes {len(ranked_candidates)} candidate(s) and {attempt_count} attempt(s).",
+            f"The live corpus currently includes {len(ranked_candidates)} candidate(s) and {attempt_count} attempt(s) for {exam_name}.",
             f"Average candidate accuracy is {average_accuracy}% with average marks conversion of {average_marks}%.",
             f"{strong_count} candidate(s) are above 80% average accuracy and {at_risk_count} candidate(s) are below 50%.",
         ],

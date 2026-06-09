@@ -16,6 +16,8 @@ const questionEmptyState = document.getElementById("questionEmptyState");
 
 let currentPayload = null;
 let selectedCandidateId = null;
+let selectedExamId = null;
+let filterCandidateId = null;
 
 function formatNumber(value) {
     return Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -331,6 +333,7 @@ function renderSelectedCandidate(payload) {
 
 function bindMeta(payload) {
     setText("examName", payload.exam?.name || "-");
+    setText("examId", payload.exam?.exam_id || "-");
     setText("candidateCount", String(payload.overview?.total_candidates || 0));
     setText("topPerformerMeta", payload.overview?.top_performer_name || "-");
     setText("currentCandidateMeta", payload.overview?.current_candidate_name || "-");
@@ -339,7 +342,12 @@ function bindMeta(payload) {
 }
 
 async function loadDashboard(forceRefresh = false, nextSelectedCandidateId = null) {
-    currentPayload = await fetchDashboard(forceRefresh, nextSelectedCandidateId);
+    currentPayload = await fetchDashboard(
+        forceRefresh,
+        nextSelectedCandidateId,
+        selectedExamId,
+        filterCandidateId,
+    );
     selectedCandidateId = currentPayload.selected_candidate?.candidate_id || nextSelectedCandidateId;
 
     bindMeta(currentPayload);
@@ -372,6 +380,15 @@ document.getElementById("pdfButton").addEventListener("click", () => {
     element.addEventListener("change", renderQuestionTable);
 });
 
-loadDashboard(false).catch((error) => {
+const pageParams = new URLSearchParams(window.location.search);
+const initialCandidateId = Number(pageParams.get("candidate_id"));
+const initialExamId = Number(pageParams.get("exam_id"));
+filterCandidateId = Number.isFinite(initialCandidateId) && initialCandidateId > 0 ? initialCandidateId : null;
+selectedExamId = Number.isFinite(initialExamId) && initialExamId > 0 ? initialExamId : null;
+
+loadDashboard(
+    false,
+    filterCandidateId,
+).catch((error) => {
     summaryCards.innerHTML = `<article class="summary-card"><h3>Error</h3><strong>Unable to load</strong><span>${error.message}</span></article>`;
 });

@@ -1,7 +1,18 @@
-export async function fetchDashboard(forceRefresh = true, selectedCandidateId = null) {
+export async function fetchDashboard(
+    forceRefresh = true,
+    selectedCandidateId = null,
+    selectedExamId = null,
+    filterCandidateId = null,
+) {
     const params = new URLSearchParams({ force_refresh: String(forceRefresh) });
     if (selectedCandidateId !== null && selectedCandidateId !== undefined) {
         params.set("selected_candidate_id", String(selectedCandidateId));
+    }
+    if (filterCandidateId !== null && filterCandidateId !== undefined) {
+        params.set("candidate_id", String(filterCandidateId));
+    }
+    if (selectedExamId !== null && selectedExamId !== undefined) {
+        params.set("exam_id", String(selectedExamId));
     }
     const response = await fetch(`/api/dashboard/overview?${params.toString()}`);
     if (!response.ok) {

@@ -1,9 +1,9 @@
-## Get full analysis JSON in terminal
+## Get analysis JSON in terminal
 
-This project already has an API that returns the full analysis JSON directly.
+This project already exposes FastAPI endpoints for the analysis JSON.
 
 You do **not** need to open the dashboard UI.
-You only need to run the FastAPI server and call the endpoint.
+You only need to run the backend and call the required endpoint.
 
 ### 1) Start the server
 
@@ -14,27 +14,77 @@ pip install -r requirements.txt
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-### 2) Main API for full analysis
+### 2) Main APIs
 
-This endpoint:
+The backend now supports:
 
-- calls the required LMS APIs
-- builds the analysis
-- calls the recommendation API
-- returns everything in JSON
+- all candidates for a selected exam
+- one candidate across a selected exam
+- candidate + exam specific dashboard filtering
+
+Base endpoints:
 
 ```text
-GET http://127.0.0.1:8000/api/analysis/all?force_refresh=true
+GET http://127.0.0.1:8000/api/analysis/all
+GET http://127.0.0.1:8000/api/dashboard/analytics
+GET http://127.0.0.1:8000/api/dashboard/overview
 ```
 
-### 3) Exact curl commands
+### 3) Supported query parameters
 
-#### Fetch fresh live analysis
+Available parameters:
+
+- `force_refresh=true|false`
+- `candidate_id=<candidate id>`
+- `exam_id=<exam id>`
+- `selected_candidate_id=<candidate id>` for dashboard selection
+
+Examples:
+
+```text
+GET /api/analysis/all?force_refresh=true&exam_id=9
+GET /api/analysis/all?force_refresh=true&candidate_id=13104&exam_id=9
+GET /api/dashboard/overview?force_refresh=true&candidate_id=13104&exam_id=9
+```
+
+### 4) Exact curl commands
 
 Use `curl.exe` on Windows PowerShell to avoid the PowerShell curl alias issue.
 
+#### Fetch fresh live analysis for all candidates in one exam
+
 ```bash
-curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true"
+curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true&exam_id=9"
+```
+
+#### Fetch fresh live analysis for one candidate in one exam
+
+```bash
+curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true&candidate_id=13104&exam_id=9"
+```
+
+#### Fetch candidate-specific analysis for one exam
+
+```bash
+curl.exe "http://127.0.0.1:8000/api/analysis/candidate/13104?force_refresh=true&exam_id=9"
+```
+
+#### Fetch candidate-specific attempts for one exam
+
+```bash
+curl.exe "http://127.0.0.1:8000/api/analysis/candidate/13104/attempts?force_refresh=true&exam_id=9"
+```
+
+#### Fetch dashboard overview for one candidate and one exam
+
+```bash
+curl.exe "http://127.0.0.1:8000/api/dashboard/overview?force_refresh=true&candidate_id=13104&exam_id=9"
+```
+
+#### Fetch dashboard wrapper JSON
+
+```bash
+curl.exe "http://127.0.0.1:8000/api/dashboard/analytics?force_refresh=true&candidate_id=13104&exam_id=9"
 ```
 
 #### Fetch latest cached analysis
@@ -43,21 +93,25 @@ curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true"
 curl.exe "http://127.0.0.1:8000/api/analysis/latest"
 ```
 
-#### Save fresh live analysis to a JSON file
+#### Save filtered live analysis to a JSON file
 
 ```bash
-curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true" -o analysis.json
+curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true&candidate_id=13104&exam_id=9" -o analysis.json
 ```
 
-#### Save cached analysis to a JSON file
+### 5) What you get in the JSON
 
-```bash
-curl.exe "http://127.0.0.1:8000/api/analysis/latest" -o latest-analysis.json
-```
+The response includes analysis data such as:
 
-### 4) What you get in the JSON
+- `candidate_analyses`
+- `candidates`
+- `ranked_candidates`
+- `attempt_analyses`
+- `request_context`
+- `raw_apis`
+- `generated_at`
 
-The response includes the same analysis data shown on the dashboard:
+For detailed attempt payloads you will also see:
 
 - `student`
 - `exam`
@@ -67,23 +121,6 @@ The response includes the same analysis data shown on the dashboard:
 - `strengths`
 - `weaknesses`
 - `recommendations`
-- `raw_apis`
-- `generated_at`
-- `snapshot_id`
-
-### 5) If you want the dashboard wrapper JSON
-
-This endpoint returns the payload inside a `data` object and also includes `source`:
-
-```text
-GET http://127.0.0.1:8000/api/dashboard/analytics?force_refresh=true
-```
-
-curl:
-
-```bash
-curl.exe "http://127.0.0.1:8000/api/dashboard/analytics?force_refresh=true"
-```
 
 ### 6) Useful endpoints
 
@@ -93,64 +130,55 @@ curl.exe "http://127.0.0.1:8000/api/dashboard/analytics?force_refresh=true"
 curl.exe "http://127.0.0.1:8000/api/health"
 ```
 
-#### Full analysis as direct JSON
+#### Full live analysis without filters
 
 ```bash
 curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true"
 ```
 
-#### Candidate-specific analysis
-
-Replace `12254` with any candidate id present in `analysis.json`.
+#### Full live analysis for exam only
 
 ```bash
-curl.exe "http://127.0.0.1:8000/api/analysis/candidate/12254"
+curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true&exam_id=9"
 ```
 
-#### Candidate-specific attempts
+#### Full live analysis for candidate + exam
 
 ```bash
-curl.exe "http://127.0.0.1:8000/api/analysis/candidate/12254/attempts"
+curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true&candidate_id=13104&exam_id=9"
 ```
 
-#### Dashboard focused on one candidate
+#### Dashboard focused on one selected candidate
 
 ```bash
-curl.exe "http://127.0.0.1:8000/api/dashboard/overview?force_refresh=false&selected_candidate_id=12254"
+curl.exe "http://127.0.0.1:8000/api/dashboard/overview?force_refresh=false&selected_candidate_id=13104"
 ```
 
-#### Latest cached analysis
+#### Dashboard focused on one candidate in one exam
 
 ```bash
-curl.exe "http://127.0.0.1:8000/api/analysis/latest"
-```
-
-#### Dashboard response with `data` and `source`
-
-```bash
-curl.exe "http://127.0.0.1:8000/api/dashboard/analytics?force_refresh=true"
+curl.exe "http://127.0.0.1:8000/api/dashboard/overview?force_refresh=true&candidate_id=13104&exam_id=9"
 ```
 
 ### 7) Important clarification
 
 If by "without the main script" you mean:
 
-- **without opening the HTML dashboard**: yes, this is already supported
+- **without opening the HTML dashboard**: yes, supported
 - **without running the FastAPI server at all**: no
 
-An API endpoint must be served by the backend process, so `uvicorn app.main:app` still needs to run.
+An API endpoint must still be served by the backend process, so `uvicorn app.main:app` needs to run.
 
-### 8) Recommended command for your use case
+### 8) Recommended commands
 
-If you want all analysis details in JSON directly in terminal, run:
+If you want all candidates for a specific exam:
 
 ```bash
-curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true"
+curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true&exam_id=9"
 ```
 
-The refreshed `analysis.json` stores the multi-candidate analysis under:
+If you want one candidate for one specific exam:
 
-- `candidate_analyses`
-- `candidates`
-- `ranked_candidates`
-- `attempt_analyses`
+```bash
+curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true&candidate_id=13104&exam_id=9"
+```

@@ -742,14 +742,39 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
 
 
 async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    request_context = raw_payload.get("request_context", {})
+    requested_candidate_id = _safe_int(request_context.get("candidate_id"))
+    requested_exam_id = _safe_int(request_context.get("exam_id"))
     attempts_by_candidate: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for record in raw_payload.get("all_candidate_attempts", []):
+        if requested_exam_id:
+            record_exam_id = _safe_int(
+                record.get("Exam_Id")
+                or record.get("ExamID")
+                or record.get("ExamId")
+                or record.get("exam_id")
+                or record.get("ID")
+            )
+            if record_exam_id and record_exam_id != requested_exam_id:
+                continue
         candidate_id = _candidate_id_from_record(record)
+        if requested_candidate_id and candidate_id != requested_candidate_id:
+            continue
         if candidate_id:
             attempts_by_candidate[candidate_id].append(record)
 
     default_candidate_id = _safe_int(raw_payload.get("candidate", {}).get("candidateid"))
-    if default_candidate_id and raw_payload.get("attempt"):
+    default_attempt_exam_id = _safe_int(
+        raw_payload.get("attempt", {}).get("Exam_Id")
+        or raw_payload.get("attempt", {}).get("ExamId")
+        or raw_payload.get("summary", {}).get("ID")
+    )
+    if (
+        default_candidate_id
+        and raw_payload.get("attempt")
+        and (not requested_candidate_id or default_candidate_id == requested_candidate_id)
+        and (not requested_exam_id or default_attempt_exam_id == requested_exam_id)
+    ):
         attempts_by_candidate.setdefault(default_candidate_id, []).append(raw_payload["attempt"])
 
     candidate_records = raw_payload.get("candidate_records", {})
@@ -814,6 +839,7 @@ async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str,
         "analysis_scope": "multi_candidate",
         "candidate_count": len(candidate_analyses),
         "attempt_count": len(all_attempt_analyses),
+        "request_context": request_context,
         "candidates": list(candidate_analyses.values()),
         "candidate_analyses": candidate_analyses,
         "ranked_candidates": ranked_candidates,

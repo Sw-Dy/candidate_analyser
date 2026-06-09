@@ -55,8 +55,16 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/api/dashboard/analytics")
-async def dashboard_analytics(force_refresh: bool = Query(default=True)) -> JSONResponse:
-    payload, source = await _load_dashboard_payload(force_refresh=force_refresh)
+async def dashboard_analytics(
+    force_refresh: bool = Query(default=True),
+    candidate_id: int | None = Query(default=None),
+    exam_id: int | None = Query(default=None),
+) -> JSONResponse:
+    payload, source = await _load_dashboard_payload(
+        force_refresh=force_refresh,
+        candidate_id=candidate_id,
+        exam_id=exam_id,
+    )
     return JSONResponse(content={"data": payload, "source": source})
 
 
@@ -64,17 +72,29 @@ async def dashboard_analytics(force_refresh: bool = Query(default=True)) -> JSON
 async def dashboard_overview(
     force_refresh: bool = Query(default=True),
     selected_candidate_id: int | None = Query(default=None),
+    candidate_id: int | None = Query(default=None),
+    exam_id: int | None = Query(default=None),
 ) -> JSONResponse:
-    analysis_payload, source = await _load_dashboard_payload(force_refresh=force_refresh)
-    if selected_candidate_id is not None and not _payload_has_candidate(analysis_payload, selected_candidate_id):
+    analysis_payload, source = await _load_dashboard_payload(
+        force_refresh=force_refresh,
+        candidate_id=candidate_id,
+        exam_id=exam_id,
+    )
+    effective_candidate_id = candidate_id if candidate_id is not None else selected_candidate_id
+    if effective_candidate_id is not None and not _payload_has_candidate(analysis_payload, effective_candidate_id):
         file_payload = _load_live_analysis_payload()
-        if file_payload is not None and _payload_has_candidate(file_payload, selected_candidate_id):
+        if (
+            candidate_id is None
+            and exam_id is None
+            and file_payload is not None
+            and _payload_has_candidate(file_payload, effective_candidate_id)
+        ):
             analysis_payload = file_payload
             source = "file"
         else:
             raise HTTPException(
                 status_code=404,
-                detail=f"No cached analysis found for selected_candidate_id {selected_candidate_id}. "
+                detail=f"No cached analysis found for candidate_id {effective_candidate_id}. "
                 "Call /api/analysis/all?force_refresh=true to rebuild the analysis.",
             )
 
@@ -83,14 +103,23 @@ async def dashboard_overview(
         analysis_payload,
         corpus_payload,
         source=source,
-        selected_candidate_id=selected_candidate_id,
+        selected_candidate_id=effective_candidate_id,
+        selected_exam_id=exam_id,
     )
     return JSONResponse(content=overview)
 
 
 @app.get("/api/analysis/all")
-async def analysis_all(force_refresh: bool = Query(default=True)) -> JSONResponse:
-    payload, _ = await _load_dashboard_payload(force_refresh=force_refresh)
+async def analysis_all(
+    force_refresh: bool = Query(default=True),
+    candidate_id: int | None = Query(default=None),
+    exam_id: int | None = Query(default=None),
+) -> JSONResponse:
+    payload, _ = await _load_dashboard_payload(
+        force_refresh=force_refresh,
+        candidate_id=candidate_id,
+        exam_id=exam_id,
+    )
     return JSONResponse(content=payload)
 
 
@@ -109,11 +138,19 @@ async def analysis_latest() -> JSONResponse:
 async def analysis_candidate(
     candidate_id: int,
     force_refresh: bool = Query(default=False),
+    exam_id: int | None = Query(default=None),
 ) -> JSONResponse:
-    payload, _ = await _load_dashboard_payload(force_refresh=force_refresh)
-    candidate_payload = _extract_candidate_analysis(payload, candidate_id)
+    payload, _ = await _load_dashboard_payload(
+        force_refresh=force_refresh,
+        candidate_id=candidate_id,
+        exam_id=exam_id,
+    )
+    candidate_payload = _extract_candidate_analysis(payload, candidate_id, exam_id)
     if candidate_payload is None:
-        raise HTTPException(status_code=404, detail=f"No analysis found for candidate_id {candidate_id}.")
+        detail = f"No analysis found for candidate_id {candidate_id}."
+        if exam_id is not None:
+            detail = f"No analysis found for candidate_id {candidate_id} and exam_id {exam_id}."
+        raise HTTPException(status_code=404, detail=detail)
     return JSONResponse(content=candidate_payload)
 
 
@@ -121,23 +158,37 @@ async def analysis_candidate(
 async def analysis_candidate_attempts(
     candidate_id: int,
     force_refresh: bool = Query(default=False),
+    exam_id: int | None = Query(default=None),
 ) -> JSONResponse:
-    payload, _ = await _load_dashboard_payload(force_refresh=force_refresh)
-    candidate_payload = _extract_candidate_analysis(payload, candidate_id)
+    payload, _ = await _load_dashboard_payload(
+        force_refresh=force_refresh,
+        candidate_id=candidate_id,
+        exam_id=exam_id,
+    )
+    candidate_payload = _extract_candidate_analysis(payload, candidate_id, exam_id)
     if candidate_payload is None:
-        raise HTTPException(status_code=404, detail=f"No attempts found for candidate_id {candidate_id}.")
+        detail = f"No attempts found for candidate_id {candidate_id}."
+        if exam_id is not None:
+            detail = f"No attempts found for candidate_id {candidate_id} and exam_id {exam_id}."
+        raise HTTPException(status_code=404, detail=detail)
     return JSONResponse(content={"candidate_id": candidate_id, "attempts": candidate_payload.get("attempts", [])})
 
 
-async def _load_dashboard_payload(force_refresh: bool) -> tuple[dict, str]:
-    if not force_refresh:
+async def _load_dashboard_payload(
+    force_refresh: bool,
+    *,
+    candidate_id: int | None = None,
+    exam_id: int | None = None,
+) -> tuple[dict, str]:
+    use_shared_cache = candidate_id is None and exam_id is None
+    if use_shared_cache and not force_refresh:
         cached_payload = fetch_latest_snapshot(DATABASE_PATH)
         if cached_payload is not None:
             return cached_payload, "cache"
 
     try:
-        payload = await _build_and_store_dashboard_payload()
-        if _is_empty_candidate_payload(payload):
+        payload = await _build_and_store_dashboard_payload(candidate_id=candidate_id, exam_id=exam_id)
+        if use_shared_cache and _is_empty_candidate_payload(payload):
             cached_payload = fetch_latest_snapshot(DATABASE_PATH)
             if cached_payload is not None and not _is_empty_candidate_payload(cached_payload):
                 logger.warning("Live dashboard refresh returned no candidates; using cached snapshot")
@@ -146,7 +197,7 @@ async def _load_dashboard_payload(force_refresh: bool) -> tuple[dict, str]:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Dashboard analytics build failed")
         cached_payload = fetch_latest_snapshot(DATABASE_PATH)
-        if cached_payload is not None:
+        if use_shared_cache and cached_payload is not None:
             return cached_payload, "cache"
         raise HTTPException(status_code=502, detail=f"Unable to build dashboard analytics: {exc}") from exc
 
@@ -159,14 +210,19 @@ def _is_empty_candidate_payload(payload: dict) -> bool:
     return not payload.get("student") and not payload.get("candidate_analyses")
 
 
-async def _build_and_store_dashboard_payload() -> dict:
+async def _build_and_store_dashboard_payload(
+    *,
+    candidate_id: int | None = None,
+    exam_id: int | None = None,
+) -> dict:
     client = LMSApiClient()
-    raw_payload = await client.fetch_all()
+    raw_payload = await client.fetch_all(candidate_id=candidate_id, exam_id=exam_id)
     logger.info("Upstream API payloads:\n%s", json.dumps(raw_payload.get("raw_apis", {}), indent=2, default=str))
     payload = await build_all_candidate_analysis(raw_payload)
     logger.info("Computed analytics snapshot:\n%s", json.dumps(payload, indent=2, default=str))
-    _write_live_json_files(raw_payload=raw_payload, payload=payload)
-    payload["snapshot_id"] = save_snapshot(DATABASE_PATH, payload)
+    if candidate_id is None and exam_id is None:
+        _write_live_json_files(raw_payload=raw_payload, payload=payload)
+        payload["snapshot_id"] = save_snapshot(DATABASE_PATH, payload)
     return payload
 
 
@@ -236,10 +292,15 @@ def _payload_has_candidate(payload: dict, candidate_id: int) -> bool:
     )
 
 
-def _extract_candidate_analysis(payload: dict, candidate_id: int) -> dict | None:
+def _extract_candidate_analysis(payload: dict, candidate_id: int, exam_id: int | None = None) -> dict | None:
     if payload.get("candidate_analyses"):
-        return payload.get("candidate_analyses", {}).get(str(candidate_id))
+        candidate_payload = payload.get("candidate_analyses", {}).get(str(candidate_id))
+        if candidate_payload is None:
+            return None
+        return _filter_candidate_analysis_by_exam(candidate_payload, exam_id)
     if int(payload.get("student", {}).get("candidate_id") or 0) == candidate_id:
+        if exam_id is not None and int(payload.get("exam", {}).get("exam_id") or 0) != exam_id:
+            return None
         return {
             "candidate_id": candidate_id,
             "candidate_name": payload.get("student", {}).get("name"),
@@ -248,6 +309,53 @@ def _extract_candidate_analysis(payload: dict, candidate_id: int) -> dict | None
             "attempts": [payload],
         }
     return None
+
+
+def _filter_candidate_analysis_by_exam(candidate_payload: dict, exam_id: int | None) -> dict | None:
+    if exam_id is None:
+        return candidate_payload
+
+    attempts = [
+        attempt
+        for attempt in candidate_payload.get("attempts", [])
+        if int(attempt.get("exam", {}).get("exam_id") or 0) == exam_id
+    ]
+    if not attempts:
+        return None
+
+    attempt_summaries = [
+        summary
+        for summary in candidate_payload.get("attempt_summaries", [])
+        if int(summary.get("exam_id") or 0) == exam_id
+    ]
+    primary_attempt = max(
+        attempts,
+        key=lambda item: (
+            float(item.get("summary", {}).get("overall_score_percent") or 0),
+            float(item.get("summary", {}).get("accuracy") or 0),
+        ),
+    )
+    return {
+        **candidate_payload,
+        "attempts": attempts,
+        "attempt_summaries": attempt_summaries,
+        "primary_attempt": primary_attempt,
+        "summary": {
+            **candidate_payload.get("summary", {}),
+            "attempts": len(attempts),
+            "best_exam": primary_attempt.get("exam", {}).get("name"),
+            "best_marks_percent": primary_attempt.get("summary", {}).get("overall_score_percent", 0),
+            "average_accuracy": round(
+                sum(float(item.get("summary", {}).get("accuracy") or 0) for item in attempts) / len(attempts),
+                2,
+            ),
+            "average_marks_percent": round(
+                sum(float(item.get("summary", {}).get("overall_score_percent") or 0) for item in attempts)
+                / len(attempts),
+                2,
+            ),
+        },
+    }
 
 
 @app.get("/api/analysis/corpus/latest")
