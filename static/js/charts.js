@@ -14,7 +14,7 @@ export function renderCharts(payload) {
 
     const selectedCandidate = payload.selected_candidate || {};
     const domainLabels = (selectedCandidate.domains || []).map((domain) => domain.domain);
-    const domainAccuracy = (selectedCandidate.domains || []).map((domain) => domain.accuracy);
+    const domainMarks = (selectedCandidate.domains || []).map((domain) => domain.score_percent ?? domain.accuracy);
     const skillLabels = selectedCandidate.skill_radar?.labels?.length
         ? selectedCandidate.skill_radar.labels
         : ["No detailed skills"];
@@ -91,8 +91,8 @@ export function renderCharts(payload) {
                 labels: domainLabels,
                 datasets: [
                     {
-                        label: "Domain Accuracy %",
-                        data: domainAccuracy,
+                        label: "Domain Marks %",
+                        data: domainMarks,
                         borderRadius: 12,
                         backgroundColor: "#a855f7",
                     },

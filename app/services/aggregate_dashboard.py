@@ -3,8 +3,6 @@ from __future__ import annotations
 from statistics import mean
 from typing import Any
 
-from app.services.analytics import _apply_precise_question_labels
-
 
 def build_aggregate_dashboard(
     analysis_payload: dict[str, Any],
@@ -107,6 +105,7 @@ def _build_multi_candidate_dashboard(
     ranked_candidates = list(analysis_payload.get("ranked_candidates", []))
     candidate_analyses = analysis_payload.get("candidate_analyses", {})
     top_performer = analysis_payload.get("top_performer", {}) or (ranked_candidates[0] if ranked_candidates else {})
+    top_performer_entry = candidate_analyses.get(str(top_performer.get("candidate_id"))) or {}
     selected_id = selected_candidate_id or top_performer.get("candidate_id")
     selected_entry = candidate_analyses.get(str(selected_id))
     if selected_entry is None and selected_candidate_id is None:
@@ -120,7 +119,7 @@ def _build_multi_candidate_dashboard(
         attempt_count=int(analysis_payload.get("attempt_count") or 0),
         exam_name=selected_exam.get("name", "All available candidate attempts"),
     )
-    top_performer_analysis = _build_multi_top_performer_analysis(top_performer, selected_entry)
+    top_performer_analysis = _build_multi_top_performer_analysis(top_performer, top_performer_entry)
 
     return {
         "generated_at": analysis_payload.get("generated_at"),
@@ -181,7 +180,6 @@ def _build_multi_selected_candidate_detail(
                 "exam_id": exam.get("exam_id"),
                 "exam_name": exam.get("name"),
             }
-            _apply_precise_question_labels(question_row)
             questions.append(question_row)
 
     strengths, weaknesses = _build_topic_strengths_and_weaknesses(questions)
@@ -228,43 +226,34 @@ def _build_multi_selected_candidate_detail(
 
 
 def _build_topic_strengths_and_weaknesses(questions: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
-    stats_by_topic: dict[str, dict[str, int]] = {}
+    stats_by_topic: dict[str, dict[str, float]] = {}
     for question in questions:
         topic = str(question.get("topic") or question.get("primary_skill") or "General").strip() or "General"
-        stats = stats_by_topic.setdefault(topic, {"total": 0, "correct": 0, "wrong": 0})
-        stats["total"] += 1
-        if question.get("is_correct") is True or question.get("status") == "Correct":
-            stats["correct"] += 1
-        else:
-            stats["wrong"] += 1
+        stats = stats_by_topic.setdefault(topic, {"questions": 0, "marks_obtained": 0.0, "total_marks": 0.0})
+        stats["questions"] += 1
+        stats["marks_obtained"] += float(question.get("marks_obtained") or 0)
+        stats["total_marks"] += float(question.get("full_marks") or 0)
 
     strengths = []
     weaknesses = []
     for topic, stats in stats_by_topic.items():
-        if stats["correct"] > stats["wrong"]:
-            strengths.append(
-                {
-                    "topic": topic,
-                    "label": f"{topic} ({stats['correct']}/{stats['total']} correct)",
-                    "total": stats["total"],
-                    "score": stats["correct"] / stats["total"],
-                }
-            )
-        elif stats["wrong"] > stats["correct"]:
-            weaknesses.append(
-                {
-                    "topic": topic,
-                    "label": f"{topic} ({stats['wrong']}/{stats['total']} wrong)",
-                    "total": stats["total"],
-                    "score": stats["wrong"] / stats["total"],
-                }
-            )
+        score = round((stats["marks_obtained"] / stats["total_marks"]) * 100, 2) if stats["total_marks"] else 0.0
+        item = {
+            "topic": topic,
+            "label": f"{topic} ({round(stats['marks_obtained'], 2)}/{round(stats['total_marks'], 2)} marks)",
+            "total": int(stats["questions"]),
+            "score": score,
+        }
+        if score >= 70:
+            strengths.append(item)
+        elif score < 50:
+            weaknesses.append(item)
 
     def sort_key(item: dict[str, Any]) -> tuple[float, int, str]:
         return (float(item["score"]), int(item["total"]), str(item["topic"]))
 
     strengths.sort(key=sort_key, reverse=True)
-    weaknesses.sort(key=sort_key, reverse=True)
+    weaknesses.sort(key=sort_key)
     return [item["label"] for item in strengths], [item["label"] for item in weaknesses]
 
 

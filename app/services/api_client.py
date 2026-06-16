@@ -223,12 +223,6 @@ class LMSApiClient:
         candidate, candidate_profile, summary, attempt, metadata, course_list, all_candidate_attempts, raw_apis = (
             await self._gather_payloads(candidate_id=target_candidate_id, exam_id=target_exam_id)
         )
-        if candidate_id is not None:
-            all_candidate_attempts = [
-                record
-                for record in all_candidate_attempts
-                if self._candidate_id_from_attempt_record(record) == target_candidate_id
-            ]
         candidate_ids = self._extract_candidate_ids(all_candidate_attempts)
         candidate_ids.add(target_candidate_id)
         candidate_records = await self._fetch_candidate_records(candidate_ids)

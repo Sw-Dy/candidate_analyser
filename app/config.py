@@ -2,7 +2,6 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATABASE_PATH = BASE_DIR / "analytics.db"
 LIVE_ANALYSIS_JSON_PATH = BASE_DIR / "analysis.json"
 LIVE_API_CORPUS_JSON_PATH = BASE_DIR / "live_api_corpus.json"
 
@@ -28,5 +27,3 @@ ALL_CANDIDATE_ATTEMPTS_URL = (
 )
 COURSE_LIST_URL = "https://lmsdemoapi.iecsl.in/api/Lms/CourseList"
 RECOMMENDATION_URL = "https://chatgptapi.iecsl.in/api/ChatBot/chat"
-
-DOMAIN_LABELS = ["Backend", "Frontend", "ML", "Security", "DevOps"]

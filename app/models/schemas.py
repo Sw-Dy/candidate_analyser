@@ -20,9 +20,11 @@ class DomainMetric(BaseModel):
     total_questions: int
     attempted_questions: int
     correct_answers: int
+    partial_answers: int = 0
     incorrect_answers: int
     marks_obtained: float
     total_marks: float
+    score_percent: float = 0
     accuracy: float
     average_time_seconds: float
     classification: str
@@ -45,9 +47,8 @@ class DashboardPayload(BaseModel):
     recommended_courses: list[dict[str, Any]]
     raw_apis: dict[str, Any]
     generated_at: str
-    snapshot_id: int | None = None
 
 
 class DashboardResponse(BaseModel):
     data: DashboardPayload
-    source: str = Field(description="live or cache")
+    source: str = Field(description="Always live")

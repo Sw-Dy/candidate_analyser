@@ -1,5 +1,5 @@
-import { downloadCsv, fetchDashboard } from "./api.js?v=20260608-4";
-import { renderCharts } from "./charts.js?v=20260608-4";
+import { downloadCsv, fetchDashboard } from "./api.js?v=20260616-1";
+import { renderCharts } from "./charts.js?v=20260616-1";
 
 const summaryCards = document.getElementById("summaryCards");
 const questionTableBody = document.getElementById("questionTableBody");
@@ -65,103 +65,38 @@ function renderTags(id, values, className) {
     container.innerHTML = (values || []).map((value) => `<span class="tag ${className}">${value}</span>`).join("");
 }
 
-const topicRules = [
-    { topic: "HTTP 404", skill: "HTTP", keywords: ["status code", "page not found", "404"] },
-    { topic: "DNS", skill: "DNS", keywords: ["domain name system", "dns"] },
-    { topic: "URL Flow", skill: "Web", keywords: ["type a url", "url in the browser", "url in browser", "dns", "http request"] },
-    { topic: "REST", skill: "REST", keywords: ["rest api", "restful", "http methods", "get post put delete"] },
-    { topic: "API", skill: "API", keywords: ["api"] },
-    { topic: ".NET", skill: ".NET", keywords: ["c# framework", "asp.net", ".net core", "dot net"] },
-    { topic: "MVC", skill: "MVC", keywords: ["mvc", "model-view-controller", "model view controller"] },
-    { topic: "DI", skill: "DI", keywords: ["dependency injection"] },
-    { topic: "Algorithm", skill: "Algorithm", keywords: ["algorithm"] },
-    { topic: "NoSQL", skill: "NoSQL", keywords: ["nosql", "mongodb", "mongo db", "mongo"] },
-    { topic: "SQL", skill: "SQL", keywords: ["sql", "query language"] },
-    { topic: "Database", keywords: ["database", "dbms", "table"] },
-    { topic: "Django", keywords: ["django"] },
-    { topic: "Responsive", skill: "Responsive", keywords: ["responsive design", "reponvide design", "responsvide design"] },
-    { topic: "Hex Color", skill: "CSS", keywords: ["hexcode", "hex code", "hexadecimal code"] },
-    { topic: "HTML/CSS", skill: "HTML/CSS", keywords: ["html", "css"] },
-    { topic: "JavaScript", skill: "JavaScript", keywords: ["javascript", "dom"] },
-    { topic: "React", skill: "React", keywords: ["react"] },
-    { topic: "UI", skill: "UI", keywords: ["frontend", "ui", "vue"] },
-    { topic: "Git", skill: "Git", keywords: ["what is git", " git?", "git is", "git "] },
-];
-
-function findTopicRule(question) {
-    const existingTopic = String(question.topic || "").trim();
-    const text = `${question.question_text || ""} ${existingTopic}`.toLowerCase().replace(/\s+/g, " ");
-
-    return topicRules.find((rule) => rule.keywords.some((keyword) => text.includes(keyword)));
-}
-
-function inferPreciseTopic(question) {
-    const existingTopic = String(question.topic || "").trim();
-    const rule = findTopicRule(question);
-    if (rule) {
-        return rule.topic;
-    }
-
-    if (["", "General Aptitude", "General Concepts"].includes(existingTopic)) {
-        return "General";
-    }
-    return existingTopic.split(/\s+/).slice(0, 3).join(" ");
-}
-
-function inferPreciseSkill(question) {
-    const currentSkill = String(question.primary_skill || "").trim();
-    const broadSkills = ["Backend", "Frontend", "Security", "DevOps", "ML", "Programming", "Problem Solving"];
-    const rule = findTopicRule(question);
-    if (rule?.skill && broadSkills.includes(currentSkill)) {
-        return rule.skill;
-    }
-    return currentSkill || rule?.skill || "-";
-}
-
-function normalizeCandidateQuestionTopics(candidate) {
-    if (!candidate.questions?.length) {
-        return;
-    }
-
-    candidate.questions = candidate.questions.map((question) => ({
-        ...question,
-        primary_skill: inferPreciseSkill(question),
-        topic: inferPreciseTopic(question),
-    }));
-}
-
 function buildTopicTags(questions) {
     const statsByTopic = new Map();
     questions.forEach((question) => {
-        const topic = inferPreciseTopic(question);
-        const stats = statsByTopic.get(topic) || { total: 0, correct: 0, wrong: 0 };
+        const topic = String(question.topic || question.primary_skill || "General").trim() || "General";
+        const stats = statsByTopic.get(topic) || { total: 0, marks: 0, fullMarks: 0 };
         stats.total += 1;
-        if (question.is_correct === true || question.status === "Correct") {
-            stats.correct += 1;
-        } else {
-            stats.wrong += 1;
-        }
+        stats.marks += Number(question.marks_obtained || 0);
+        stats.fullMarks += Number(question.full_marks || 0);
         statsByTopic.set(topic, stats);
     });
 
     const strengths = [];
     const weaknesses = [];
     statsByTopic.forEach((stats, topic) => {
-        const score = Math.max(stats.correct, stats.wrong) / stats.total;
+        const score = stats.fullMarks ? (stats.marks / stats.fullMarks) * 100 : 0;
+        const label = `${topic} (${formatNumber(stats.marks)}/${formatNumber(stats.fullMarks)} marks)`;
         const item = { topic, total: stats.total, score };
-        if (stats.correct > stats.wrong) {
-            strengths.push({ ...item, label: `${topic} (${stats.correct}/${stats.total} correct)` });
-        } else if (stats.wrong > stats.correct) {
-            weaknesses.push({ ...item, label: `${topic} (${stats.wrong}/${stats.total} wrong)` });
+        if (score >= 70) {
+            strengths.push({ ...item, label });
+        } else if (score < 50) {
+            weaknesses.push({ ...item, label });
         }
     });
 
-    const sortByMajority = (left, right) =>
+    const sortByScoreDesc = (left, right) =>
         right.score - left.score || right.total - left.total || left.topic.localeCompare(right.topic);
+    const sortByScoreAsc = (left, right) =>
+        left.score - right.score || right.total - left.total || left.topic.localeCompare(right.topic);
 
     return {
-        strengths: strengths.sort(sortByMajority).map((item) => item.label),
-        weaknesses: weaknesses.sort(sortByMajority).map((item) => item.label),
+        strengths: strengths.sort(sortByScoreDesc).map((item) => item.label),
+        weaknesses: weaknesses.sort(sortByScoreAsc).map((item) => item.label),
     };
 }
 
@@ -273,7 +208,6 @@ function renderCandidateList(payload) {
 
 function renderSelectedCandidate(payload) {
     const candidate = payload.selected_candidate || {};
-    normalizeCandidateQuestionTopics(candidate);
     const profile = candidate.profile || {};
     const notes = candidate.notes || [];
     const attempts = candidate.attempt_summaries || [];
@@ -294,7 +228,7 @@ function renderSelectedCandidate(payload) {
         <div class="detail-metric-grid">
             <article class="detail-metric"><span class="meta-label">Rank</span><strong>#${candidate.rank || "-"}</strong></article>
             <article class="detail-metric"><span class="meta-label">Accuracy</span><strong>${formatNumber(candidate.summary?.accuracy || 0)}%</strong></article>
-            <article class="detail-metric"><span class="meta-label">Marks</span><strong>${formatNumber(candidate.summary?.marks_percent || 0)}%</strong></article>
+            <article class="detail-metric"><span class="meta-label">Marks</span><strong>${formatNumber(candidate.summary?.obtained_marks || 0)}/${formatNumber(candidate.summary?.total_marks || 0)}</strong></article>
             <article class="detail-metric"><span class="meta-label">Speed</span><strong>${formatNumber(candidate.summary?.speed_score || 0)}</strong></article>
         </div>
         <div class="detail-list">

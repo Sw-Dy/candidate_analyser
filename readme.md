@@ -1,6 +1,6 @@
 # Candidate Analyser
 
-FastAPI dashboard for pulling LMS/candidate data, analysing candidate exam attempts, storing snapshots, and serving both cohort and candidate-specific JSON.
+FastAPI dashboard for pulling live LMS/candidate data, analysing candidate exam attempts, and serving both cohort and candidate-specific JSON.
 
 ## Run The App
 
@@ -20,7 +20,7 @@ The app works in four stages:
 
 1. Fetch live data from external APIs.
 2. Convert the raw API responses into analysis objects.
-3. Store the analysis in files and SQLite.
+3. Write the latest live analysis/debug artifacts to JSON files.
 4. Serve dashboard JSON and candidate-specific JSON through FastAPI endpoints.
 
 In simple terms:
@@ -29,7 +29,7 @@ In simple terms:
 External APIs
   -> app/services/api_client.py
   -> app/services/analytics.py
-  -> analysis.json + live_api_corpus.json + analytics.db
+  -> analysis.json + live_api_corpus.json
   -> app/main.py endpoints
   -> static/js dashboard UI
 ```
@@ -60,7 +60,9 @@ It does these jobs:
 - Keeps the raw API response metadata under `raw_apis`.
 - Normalizes awkward API shapes, for example when an API returns JSON inside a string.
 
-## What Gets Stored Where
+## Live JSON Artifacts
+
+The app always calls the live external APIs for dashboard and analysis endpoints. The JSON files below are overwritten after live analysis builds and are useful for inspection/debugging; they are not used to serve responses.
 
 ### `live_api_corpus.json`
 
@@ -103,36 +105,11 @@ Important keys:
 - `attempt_analyses`: every analysed attempt.
 - `top_performer`: highest ranked candidate.
 
-### `analytics.db`
-
-This is a local SQLite cache.
-
-The table is created in `app/database.py`:
-
-```text
-analytics_snapshots
-```
-
-Columns:
-
-- `id`: auto-increment snapshot id.
-- `candidate_id`: legacy/default candidate id field.
-- `exam_id`: legacy/default exam id field.
-- `generated_at`: when the snapshot was produced.
-- `payload_json`: the full analysis JSON as text.
-
-The important part is `payload_json`: it contains the entire latest analysis payload. The database is used so the app can still show the dashboard if:
-
-- an external API is slow,
-- an external API fails,
-- live refresh returns empty data,
-- you open the dashboard and do not want to wait for a full live refresh.
-
 So:
 
 ```text
-analysis.json = latest analysis written as a readable file
-analytics.db = latest and historical snapshots used by the backend cache
+analysis.json = latest live analysis written as a readable file
+live_api_corpus.json = latest live raw API corpus written as a readable file
 ```
 
 ## How Analysis Works
@@ -149,15 +126,17 @@ It calculates:
 
 - total marks
 - obtained marks
+- per-question obtained marks from the LMS API when available
 - score percentage
 - accuracy
 - attempted questions
-- correct/incorrect/skipped questions
+- correct/partial/incorrect/skipped questions
 - time taken
 - average time per question
 - question status
 - selected answer and correct answer
-- domain classification
+- ChatGPT-generated domain and topic labels
+- ChatGPT-generated difficulty based on the applied position
 - strengths
 - weaknesses
 - skill radar
@@ -176,6 +155,8 @@ It:
 - calculates candidate averages
 - ranks candidates
 - stores the result under `candidate_analyses`
+
+When a request includes `candidate_id`, the backend still keeps all candidate attempts in the cohort ranking. The candidate id only selects the candidate detail returned by candidate-specific/dashboard endpoints; it does not change `ranked_candidates` or `top_performer`.
 
 That is why this endpoint works:
 
@@ -201,13 +182,13 @@ GET /api/analysis/all?force_refresh=true
 
 Returns the full analysis document.
 
-### Latest cached analysis
+### Latest live analysis
 
 ```text
 GET /api/analysis/latest
 ```
 
-Returns the latest saved snapshot from `analytics.db`.
+Calls the live APIs and returns a newly built analysis payload.
 
 ### One candidate
 
@@ -254,45 +235,17 @@ This is the main endpoint used by the browser dashboard. It returns a UI-friendl
 
 The shaping happens in `app/services/aggregate_dashboard.py`.
 
-## Live Data Versus Cache
+## Live Data Loading
 
-Many endpoints accept `force_refresh`.
-
-### `force_refresh=true`
-
-The backend tries to call the live external APIs again.
+All dashboard and analysis endpoints call the live external APIs. The older `force_refresh` query parameter is still accepted for backwards compatibility, but it no longer changes how data is loaded.
 
 Flow:
 
 ```text
-call APIs -> rebuild analysis -> write JSON files -> save DB snapshot -> return source="live"
+call APIs -> rebuild analysis -> write JSON artifacts -> return source="live"
 ```
 
-Use this when you want the newest possible data.
-
-### `force_refresh=false`
-
-The backend reads the latest snapshot from `analytics.db`.
-
-Flow:
-
-```text
-read analytics.db -> return source="cache"
-```
-
-Use this when you want a fast dashboard load.
-
-### Why the dashboard sometimes says `live`
-
-It says `live` when the response came from a fresh external API pull.
-
-### Why the dashboard sometimes says `cache`
-
-It says `cache` when the response came from `analytics.db`.
-
-This can happen intentionally when `force_refresh=false`, or automatically when a live refresh fails or returns no usable candidates.
-
-This fallback is handled in `app/main.py` inside `_load_dashboard_payload(...)`.
+If a live API call fails, the request fails with an error instead of falling back to an older response.
 
 ## What The ChatGPT API Does
 
@@ -319,25 +272,29 @@ For each analysed attempt, the app sends a compact prompt containing:
 - languages
 - exam info
 - question ids and question text
-- existing domain/topic guesses
+- per-question obtained marks and full marks
 
 The prompt asks the ChatGPT API to return strict JSON:
 
 - 5 to 8 skill labels
+- free-form domain per question
+- free-form topic per question
 - primary skill per question
 - supporting skills per question
-- difficulty label
+- difficulty label based on the candidate's applied role/position
 - difficulty rating from 1 to 5
 
 That result becomes:
 
+- `domain`
+- `topic`
 - `primary_skill`
 - `supporting_skills`
 - `difficulty_label`
 - `difficulty_rating`
 - `skill_radar`
 
-If the ChatGPT API fails, the app uses keyword-based fallback logic.
+The backend does not overwrite successful ChatGPT domain/topic labels with a fixed hardcoded list. If the ChatGPT API fails, the app uses conservative fallback labels so the dashboard can still load.
 
 ### Recommendations and courses
 
@@ -440,10 +397,9 @@ Responsibilities:
 - serves dashboard HTML
 - serves static files
 - exposes JSON endpoints
-- decides live versus cache
+- always loads live API data
 - writes `analysis.json`
 - writes `live_api_corpus.json`
-- saves snapshots to `analytics.db`
 
 ### `app/config.py`
 
@@ -452,17 +408,6 @@ Central place for:
 - API URLs
 - tenant/application/candidate ids
 - file paths
-- dashboard domain labels
-
-### `app/database.py`
-
-SQLite helper.
-
-Responsibilities:
-
-- create `analytics_snapshots`
-- save a full analysis snapshot
-- fetch latest saved snapshot
 
 ### `app/services/api_client.py`
 
@@ -519,7 +464,7 @@ Get fresh analysis:
 curl.exe "http://127.0.0.1:8000/api/analysis/all?force_refresh=true"
 ```
 
-Get cached analysis:
+Get latest live analysis:
 
 ```bash
 curl.exe "http://127.0.0.1:8000/api/analysis/latest"
@@ -572,6 +517,6 @@ So when you call:
 /api/analysis/candidate/12254
 ```
 
-FastAPI loads the latest analysis payload and returns only candidate `12254`.
+FastAPI rebuilds the live analysis payload and returns only candidate `12254`.
 
-The database is not doing complex scoring. It is mainly storing completed analysis snapshots so the dashboard can load quickly and survive API failures.
+The cohort-level ranking and top performer always come from the full live candidate set for the exam, even when a request selects one candidate for detail display.

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260605-2">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260616-1">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
@@ -16,7 +16,7 @@
             <div>
                 <p class="eyebrow">Live Candidate Intelligence</p>
                 <h1>Candidate Performance Dashboard</h1>
-                <p class="subtitle">Review the top performer, compare ranked candidates, and inspect candidate-level analysis from the live corpus snapshot.</p>
+                <p class="subtitle">Review the top performer, compare ranked candidates, and inspect candidate-level analysis from the live corpus.</p>
             </div>
             <div class="hero-actions">
                 <button id="refreshButton" class="primary-button">Refresh Live Data</button>
@@ -120,7 +120,7 @@
             <article class="panel">
                 <div class="panel-header">
                     <h2>Domain Performance</h2>
-                    <p>Domain-wise accuracy for the selected candidate where detailed analysis exists.</p>
+                    <p>Domain-wise marks percentage for the selected candidate where detailed analysis exists.</p>
                 </div>
                 <div class="canvas-wrap">
                     <canvas id="selectedDomainBarChart"></canvas>
@@ -158,6 +158,7 @@
                 <select id="statusFilter">
                     <option value="all">All Statuses</option>
                     <option value="Correct">Correct</option>
+                    <option value="Partial">Partial</option>
                     <option value="Incorrect">Incorrect</option>
                     <option value="Skipped">Skipped</option>
                 </select>
@@ -185,6 +186,6 @@
         </section>
     </div>
 
-    <script type="module" src="/static/js/dashboard.js?v=20260609-1"></script>
+    <script type="module" src="/static/js/dashboard.js?v=20260616-1"></script>
 </body>
 </html>

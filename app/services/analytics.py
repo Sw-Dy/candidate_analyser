@@ -3,68 +3,15 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
-from app.config import DOMAIN_LABELS
 from app.services.recommendation import RecommendationService
 from app.services.skill_intelligence import SkillIntelligenceService
 
 
-TOPIC_KEYWORDS = [
-    ("Backend", "HTTP 404", ["status code", "page not found", "404"]),
-    ("Backend", "DNS", ["domain name system", "dns"]),
-    ("Backend", "URL Flow", ["type a url", "url in the browser", "url in browser", "dns", "http request"]),
-    ("Backend", "REST", ["rest api", "restful", "http methods", "get post put delete"]),
-    ("Backend", "API", ["api"]),
-    ("Backend", ".NET", ["c# framework", "asp.net", ".net core", "dot net"]),
-    ("Backend", "MVC", ["mvc", "model-view-controller", "model view controller"]),
-    ("Backend", "DI", ["dependency injection"]),
-    ("Backend", "Algorithm", ["algorithm"]),
-    ("Backend", "NoSQL", ["nosql", "mongodb", "mongo db", "mongo"]),
-    ("Backend", "SQL", ["sql", "query language"]),
-    ("Backend", "Database", ["database", "dbms", "table"]),
-    ("Backend", "Django", ["django"]),
-    ("Backend", "Server", ["server", "backend", "fastapi", "flask"]),
-    ("Frontend", "Responsive", ["responsive design", "reponvide design", "responsvide design"]),
-    ("Frontend", "Hex Color", ["hexcode", "hex code", "hexadecimal code"]),
-    ("Frontend", "HTML/CSS", ["html", "css"]),
-    ("Frontend", "JavaScript", ["javascript", "dom"]),
-    ("Frontend", "React", ["react"]),
-    ("Frontend", "UI", ["frontend", "ui", "vue"]),
-    ("ML", "ML Models", ["model", "training", "regression", "classification", "numpy"]),
-    ("ML", "Datasets", ["dataset"]),
-    ("Security", "Authentication", ["auth", "token"]),
-    ("Security", "Web Security", ["encryption", "xss", "csrf", "vulnerability"]),
-    ("DevOps", "Containers", ["docker", "kubernetes"]),
-    ("DevOps", "Deployment Pipelines", ["ci", "cd", "deployment", "pipeline", "linux"]),
-    ("DevOps", "Git", ["what is git", " git?", "git is", "git "]),
-]
-
-TOPIC_SKILLS = {
-    "HTTP 404": "HTTP",
-    "DNS": "DNS",
-    "URL Flow": "Web",
-    "REST": "REST",
-    "API": "API",
-    ".NET": ".NET",
-    "MVC": "MVC",
-    "DI": "DI",
-    "Algorithm": "Algorithm",
-    "NoSQL": "NoSQL",
-    "SQL": "SQL",
-    "Database": "Database",
-    "Responsive": "Responsive",
-    "Hex Color": "CSS",
-    "HTML/CSS": "HTML/CSS",
-    "JavaScript": "JavaScript",
-    "React": "React",
-    "UI": "UI",
-    "ML Models": "ML",
-    "Datasets": "ML",
-    "Git": "Git",
-}
+DEFAULT_LABEL = "Pending AI Label"
 
 
 def _safe_float(value: Any) -> float:
@@ -98,91 +45,152 @@ def _classify_strength(accuracy: float) -> str:
     return "Weak"
 
 
-def _normalize_domain(question: dict[str, Any], index: int) -> tuple[str, str, str]:
-    text_parts = [str(question.get("Question_Text", ""))]
-    options = question.get("Options", [])
-    text_parts.extend(str(option.get("Option_Text", "")) for option in options)
-    corpus = re.sub(r"\s+", " ", " ".join(text_parts).lower()).strip()
-
-    for domain, topic, keywords in TOPIC_KEYWORDS:
-        for keyword in keywords:
-            if keyword in corpus:
-                return domain, topic, "keyword"
-
-    fallback_domain = DOMAIN_LABELS[index % len(DOMAIN_LABELS)]
-    return fallback_domain, _fallback_topic_label(corpus), "fallback"
+def _first_present_number(payload: dict[str, Any], keys: list[str]) -> tuple[float, str | None]:
+    for key in keys:
+        if key in payload and payload.get(key) not in (None, ""):
+            return _safe_float(payload.get(key)), key
+    return 0.0, None
 
 
-def _fallback_topic_label(corpus: str) -> str:
-    if any(word in corpus for word in ["aptitude", "logic", "reasoning", "pattern"]):
-        return "Reasoning"
-    if any(word in corpus for word in ["write", "explain", "describe"]):
-        return "Concept Explanation"
-    return "General Concepts"
+def _extract_full_marks(question: dict[str, Any]) -> tuple[float, str | None]:
+    return _first_present_number(
+        question,
+        [
+            "Full_Marks",
+            "FullMarks",
+            "full_marks",
+            "QuestionMarks",
+            "Question_Marks",
+            "TotalQuestionMarks",
+            "Total_Question_Marks",
+            "MaxMarks",
+            "MaximumMarks",
+            "Marks",
+            "TotalMarks",
+        ],
+    )
 
 
-def _apply_precise_question_labels(row: dict[str, Any]) -> None:
-    corpus = re.sub(
-        r"\s+",
-        " ",
-        " ".join(
-            str(row.get(field, ""))
-            for field in ["question_text", "topic"]
-        ).lower(),
-    ).strip()
-
-    for domain, topic, keywords in TOPIC_KEYWORDS:
-        if any(keyword in corpus for keyword in keywords):
-            row["domain"] = domain
-            row["topic"] = topic
-            row["primary_skill"] = TOPIC_SKILLS.get(topic, row.get("primary_skill") or domain)
-            return
-
-    if str(row.get("topic") or "").strip() in {"", "General", "General Concepts", "General Aptitude"}:
-        row["topic"] = "Concept"
-    if str(row.get("primary_skill") or "").strip() in {"", "Backend", "Frontend", "Security", "DevOps", "ML"}:
-        row["primary_skill"] = TOPIC_SKILLS.get(row["topic"], row["primary_skill"])
+def _extract_marks_obtained(question: dict[str, Any], full_marks: float, is_correct_without_marks: bool) -> tuple[float, str]:
+    value, key = _first_present_number(
+        question,
+        [
+            "EvaluatedMarks",
+            "Evaluated_Marks",
+            "ObtainedMarks",
+            "Obtained_Marks",
+            "MarksObtained",
+            "Marks_Obtained",
+            "CandidateMarks",
+            "Candidate_Marks",
+            "QuestionObtainedMarks",
+            "Question_Obtained_Marks",
+            "Score",
+            "score",
+            "marks_obtained",
+            "obtained_marks",
+        ],
+    )
+    if key is not None:
+        return value, key
+    return (full_marks if is_correct_without_marks else 0.0), "legacy_correctness_fallback"
 
 
 def _build_topic_strengths_and_weaknesses(question_rows: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
-    topic_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "correct": 0, "wrong": 0})
+    topic_stats: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"questions": 0, "marks_obtained": 0.0, "total_marks": 0.0}
+    )
 
     for row in question_rows:
-        topic = str(row.get("topic") or row.get("domain") or "General Concepts").strip()
+        topic = str(row.get("topic") or row.get("domain") or DEFAULT_LABEL).strip()
         if not topic:
-            topic = "General Concepts"
+            topic = DEFAULT_LABEL
         stats = topic_stats[topic]
-        stats["total"] += 1
-        if row.get("is_correct"):
-            stats["correct"] += 1
-        else:
-            stats["wrong"] += 1
+        stats["questions"] += 1
+        stats["marks_obtained"] += float(row.get("marks_obtained") or 0)
+        stats["total_marks"] += float(row.get("full_marks") or 0)
 
     strengths = []
     weaknesses = []
     for topic, stats in topic_stats.items():
-        if stats["correct"] > stats["wrong"]:
-            strengths.append(
-                {
-                    "topic": topic,
-                    "label": f"{topic} ({stats['correct']}/{stats['total']} correct)",
-                    "total": stats["total"],
-                    "score": stats["correct"] / stats["total"],
-                }
-            )
-        elif stats["wrong"] > stats["correct"]:
-            weaknesses.append(
-                {
-                    "topic": topic,
-                    "label": f"{topic} ({stats['wrong']}/{stats['total']} wrong)",
-                    "total": stats["total"],
-                    "score": stats["wrong"] / stats["total"],
-                }
-            )
+        percent = round((stats["marks_obtained"] / stats["total_marks"]) * 100, 2) if stats["total_marks"] else 0.0
+        label = f"{topic} ({round(stats['marks_obtained'], 2)}/{round(stats['total_marks'], 2)} marks)"
+        item = {
+            "topic": topic,
+            "label": label,
+            "total": int(stats["questions"]),
+            "score": percent,
+        }
+        if percent >= 70:
+            strengths.append(item)
+        elif percent < 50:
+            weaknesses.append(item)
 
     strengths.sort(key=lambda item: (item["score"], item["total"], item["topic"]), reverse=True)
-    weaknesses.sort(key=lambda item: (item["score"], item["total"], item["topic"]), reverse=True)
+    weaknesses.sort(key=lambda item: (item["score"], item["total"], item["topic"]))
     return [item["label"] for item in strengths], [item["label"] for item in weaknesses]
+
+
+def _build_domain_rows(question_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    domain_buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in question_rows:
+        domain = str(row.get("domain") or DEFAULT_LABEL).strip() or DEFAULT_LABEL
+        domain_buckets[domain].append(row)
+
+    domain_rows = []
+    for domain in sorted(domain_buckets):
+        rows = domain_buckets[domain]
+        domain_attempted = sum(1 for row in rows if row["is_answered"])
+        domain_correct = sum(1 for row in rows if row["is_correct"])
+        domain_partial = sum(1 for row in rows if row["status"] == "Partial")
+        domain_incorrect = sum(1 for row in rows if row["status"] == "Incorrect")
+        domain_total_marks = round(sum(row["full_marks"] for row in rows), 2)
+        domain_marks = round(sum(row["marks_obtained"] for row in rows), 2)
+        domain_score_percent = round((domain_marks / domain_total_marks) * 100, 2) if domain_total_marks else 0.0
+        domain_accuracy = round((domain_correct / len(rows)) * 100, 2) if rows else 0.0
+        weak_topic_scores: dict[str, dict[str, float]] = defaultdict(
+            lambda: {"marks_obtained": 0.0, "total_marks": 0.0}
+        )
+        for row in rows:
+            topic = str(row.get("topic") or DEFAULT_LABEL).strip() or DEFAULT_LABEL
+            weak_topic_scores[topic]["marks_obtained"] += float(row.get("marks_obtained") or 0)
+            weak_topic_scores[topic]["total_marks"] += float(row.get("full_marks") or 0)
+
+        weak_topics = sorted(
+            (
+                (
+                    topic,
+                    (stats["marks_obtained"] / stats["total_marks"] * 100) if stats["total_marks"] else 0.0,
+                )
+                for topic, stats in weak_topic_scores.items()
+            ),
+            key=lambda item: item[1],
+        )
+
+        domain_rows.append(
+            {
+                "domain": domain,
+                "total_questions": len(rows),
+                "attempted_questions": domain_attempted,
+                "correct_answers": domain_correct,
+                "partial_answers": domain_partial,
+                "incorrect_answers": domain_incorrect,
+                "marks_obtained": domain_marks,
+                "total_marks": domain_total_marks,
+                "score_percent": domain_score_percent,
+                "accuracy": domain_accuracy,
+                "average_time_seconds": round(
+                    sum(row["time_spent_seconds"] for row in rows) / domain_attempted, 2
+                )
+                if domain_attempted
+                else 0.0,
+                "classification": _classify_strength(domain_score_percent) if rows else "No Data",
+                "weak_topics": [topic for topic, percent in weak_topics if percent < 70][:3],
+            }
+        )
+
+    domain_rows.sort(key=lambda item: (item["score_percent"], item["total_questions"]), reverse=True)
+    return domain_rows
 
 
 def _extract_answers(question: dict[str, Any]) -> tuple[str, str]:
@@ -210,18 +218,31 @@ def _extract_answers(question: dict[str, Any]) -> tuple[str, str]:
     return str(selected_text), str(correct_text)
 
 
-def _is_correct(question: dict[str, Any]) -> bool:
+def _is_correct_by_options(question: dict[str, Any]) -> bool:
     options = question.get("Options", [])
-    option_match = any(
+    return any(
         (option.get("Is_Correct_Option") or option.get("IsCorrectOption"))
         and (option.get("Is_Selected_By_Candidate") or option.get("IsSelectedByCandidate"))
         for option in options
     )
-    if option_match:
-        return True
 
-    evaluated_marks = _safe_float(question.get("EvaluatedMarks") or question.get("Evaluated_Marks"))
-    return evaluated_marks > 0
+
+def _is_correct_from_marks(marks_obtained: float, full_marks: float, fallback_correct: bool) -> bool:
+    if full_marks > 0:
+        return marks_obtained >= full_marks
+    if marks_obtained > 0:
+        return True
+    return fallback_correct
+
+
+def _question_status(*, is_answered: bool, is_correct: bool, marks_obtained: float, full_marks: float) -> str:
+    if not is_answered:
+        return "Skipped"
+    if is_correct:
+        return "Correct"
+    if marks_obtained > 0 and (full_marks <= 0 or marks_obtained < full_marks):
+        return "Partial"
+    return "Incorrect"
 
 
 def _flatten_profile_sections(candidate_profile: dict[str, Any]) -> list[dict[str, Any]]:
@@ -296,9 +317,9 @@ def _build_skill_radar(
 
     for row in question_rows:
         marks_percent = (row["marks_obtained"] / row["full_marks"] * 100) if row["full_marks"] else 0.0
-        accuracy_score = 100.0 if row["is_correct"] else (35.0 if row["is_answered"] else 0.0)
+        accuracy_score = 100.0 if row["is_correct"] else (50.0 if row["status"] == "Partial" else 0.0)
         speed_score = _question_speed_score(row["time_spent_seconds"], average_time_seconds)
-        question_score = round((marks_percent * 0.45) + (accuracy_score * 0.4) + (speed_score * 0.15), 2)
+        question_score = round((marks_percent * 0.70) + (accuracy_score * 0.15) + (speed_score * 0.15), 2)
 
         skills = [row.get("primary_skill")] + list(row.get("supporting_skills", []))
         deduped_skills = [skill for skill in dict.fromkeys(skills) if skill]
@@ -355,6 +376,31 @@ def _compute_record_accuracy(record: dict[str, Any]) -> float:
         if is_correct:
             correct += 1
     return round((correct / attempted) * 100, 2) if attempted else 0.0
+
+
+def _compute_record_marks(record: dict[str, Any], fallback_total_marks: float = 0.0) -> tuple[float, float]:
+    obtained_marks, obtained_source = _first_present_number(
+        record,
+        ["ObtainedMarks", "obtained_marks", "MarksObtained", "Score"],
+    )
+    total_marks, total_source = _first_present_number(
+        record,
+        ["TotalMarks", "total_marks", "FullMarks", "MaxMarks"],
+    )
+    questions = _extract_record_questions(record)
+    if obtained_source is None and questions:
+        question_obtained = 0.0
+        for question in questions:
+            full_marks, _ = _extract_full_marks(question)
+            option_correct = _is_correct_by_options(question)
+            marks, _ = _extract_marks_obtained(question, full_marks, option_correct)
+            question_obtained += marks
+        obtained_marks = question_obtained
+    if total_source is None and questions:
+        total_marks = sum(_extract_full_marks(question)[0] for question in questions)
+    if total_source is None and not total_marks:
+        total_marks = fallback_total_marks
+    return round(obtained_marks, 2), round(total_marks, 2)
 
 
 def _compute_record_total_time(record: dict[str, Any]) -> int:
@@ -428,11 +474,9 @@ def _build_rankings(
         avg_time = round(total_time_seconds / attempted_questions, 2) if attempted_questions else 0.0
         if not avg_time and candidate_id == current_candidate_id:
             avg_time = current_payload["summary"]["average_time_per_question_seconds"]
-        obtained_marks = _safe_float(
-            record.get("ObtainedMarks") or record.get("obtained_marks") or record.get("Score")
-        )
-        total_marks = _safe_float(
-            record.get("TotalMarks") or record.get("total_marks") or current_payload["summary"]["total_marks"]
+        obtained_marks, total_marks = _compute_record_marks(
+            record,
+            fallback_total_marks=current_payload["summary"]["total_marks"],
         )
         marks_percent = round((obtained_marks / total_marks) * 100, 2) if total_marks else 0.0
         accuracy = _compute_record_accuracy(record)
@@ -472,7 +516,7 @@ def _build_rankings(
             )
 
         row["composite_score"] = round(
-            (row["marks_percent"] * 0.45) + (row["accuracy"] * 0.35) + (row["speed_score"] * 0.20),
+            (row["marks_percent"] * 0.65) + (row["accuracy"] * 0.20) + (row["speed_score"] * 0.15),
             2,
         )
 
@@ -525,38 +569,45 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
     total_questions = len(questions)
     equal_time = round(total_time_seconds / attempted_questions, 2) if attempted_questions else 0.0
 
-    domain_buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
     question_rows = []
 
-    for index, question in enumerate(questions):
+    for question in questions:
         selected_answer, correct_answer = _extract_answers(question)
         is_answered = bool(question.get("IsAnswered"))
         if not is_answered:
             is_answered = bool(question.get("is_answered"))
-        is_correct = _is_correct(question)
-        domain, topic, mapping_source = _normalize_domain(question, index)
-        full_marks = float(question.get("Full_Marks") or 0)
-        marks_obtained = float(question.get("EvaluatedMarks") or (full_marks if is_correct else 0))
+        full_marks, full_marks_source = _extract_full_marks(question)
+        option_correct = _is_correct_by_options(question)
+        marks_obtained, marks_source = _extract_marks_obtained(question, full_marks, option_correct)
+        is_correct = _is_correct_from_marks(marks_obtained, full_marks, option_correct)
         time_spent = equal_time if is_answered else 0.0
-        status = "Correct" if is_correct else ("Incorrect" if is_answered else "Skipped")
+        status = _question_status(
+            is_answered=is_answered,
+            is_correct=is_correct,
+            marks_obtained=marks_obtained,
+            full_marks=full_marks,
+        )
 
         row = {
             "question_id": int(question.get("Question_Id") or question.get("QuestionId") or 0),
             "question_text": str(question.get("Question_Text", "")),
             "question_type": str(question.get("Question_Type_Name") or question.get("QuestionTypeName") or "Unknown"),
-            "domain": domain,
-            "topic": topic,
+            "domain": DEFAULT_LABEL,
+            "topic": DEFAULT_LABEL,
             "difficulty": str(
                 raw_payload.get("metadata", {}).get("Exam_Level_Name")
                 or raw_payload.get("summary", {}).get("Exam_Level_Name")
                 or "Intermediate"
             ),
-            "mapping_source": mapping_source,
+            "mapping_source": "pending_ai",
             "status": status,
             "is_answered": is_answered,
             "is_correct": is_correct,
-            "marks_obtained": marks_obtained,
-            "full_marks": full_marks,
+            "marks_obtained": round(marks_obtained, 2),
+            "full_marks": round(full_marks, 2),
+            "marks_percent": round((marks_obtained / full_marks) * 100, 2) if full_marks else 0.0,
+            "marks_source": marks_source,
+            "full_marks_source": full_marks_source,
             "negative_marks": float(question.get("Negative_Marks") or 0),
             "time_spent_seconds": time_spent,
             "selected_answer": selected_answer,
@@ -567,55 +618,29 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
             "difficulty_rating": 3,
         }
         question_rows.append(row)
-        domain_buckets[domain].append(row)
 
     summary = raw_payload.get("summary", {})
+    summary_obtained_marks, summary_obtained_source = _first_present_number(
+        summary,
+        ["ObtainedMarks", "obtained_marks", "MarksObtained", "Score"],
+    )
+    summary_total_marks, summary_total_source = _first_present_number(
+        summary,
+        ["TotalMarks", "total_marks", "FullMarks", "MaxMarks"],
+    )
     obtained_marks = round(
-        _safe_float(summary.get("ObtainedMarks") or summary.get("obtained_marks"))
-        or sum(row["marks_obtained"] for row in question_rows),
+        summary_obtained_marks if summary_obtained_source is not None else sum(row["marks_obtained"] for row in question_rows),
         2,
     )
     total_marks = round(
-        _safe_float(summary.get("TotalMarks") or summary.get("total_marks"))
-        or sum(row["full_marks"] for row in question_rows),
+        summary_total_marks if summary_total_source is not None else sum(row["full_marks"] for row in question_rows),
         2,
     )
     correct_answers = sum(1 for row in question_rows if row["is_correct"])
+    partial_answers = sum(1 for row in question_rows if row["status"] == "Partial")
     incorrect_answers = sum(1 for row in question_rows if row["status"] == "Incorrect")
     overall_accuracy = round((correct_answers / attempted_questions) * 100, 2) if attempted_questions else 0.0
     average_time = round((total_time_seconds / attempted_questions), 2) if attempted_questions else 0.0
-
-    domain_rows = []
-    for domain in DOMAIN_LABELS:
-        rows = domain_buckets.get(domain, [])
-        domain_attempted = sum(1 for row in rows if row["is_answered"])
-        domain_correct = sum(1 for row in rows if row["is_correct"])
-        domain_incorrect = sum(1 for row in rows if row["status"] == "Incorrect")
-        domain_total_marks = round(sum(row["full_marks"] for row in rows), 2)
-        domain_marks = round(sum(row["marks_obtained"] for row in rows), 2)
-        domain_accuracy = round((domain_correct / len(rows)) * 100, 2) if rows else 0.0
-        weak_topic_candidates = [row["topic"] for row in rows if row["status"] != "Correct"]
-        topic_counter = Counter(weak_topic_candidates)
-
-        domain_rows.append(
-            {
-                "domain": domain,
-                "total_questions": len(rows),
-                "attempted_questions": domain_attempted,
-                "correct_answers": domain_correct,
-                "incorrect_answers": domain_incorrect,
-                "marks_obtained": domain_marks,
-                "total_marks": domain_total_marks,
-                "accuracy": domain_accuracy,
-                "average_time_seconds": round(
-                    sum(row["time_spent_seconds"] for row in rows) / domain_attempted, 2
-                )
-                if domain_attempted
-                else 0.0,
-                "classification": _classify_strength(domain_accuracy) if rows else "No Data",
-                "weak_topics": [topic for topic, _ in topic_counter.most_common(3)],
-            }
-        )
 
     strengths, weaknesses = _build_topic_strengths_and_weaknesses(question_rows)
 
@@ -661,6 +686,7 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
             "obtained_marks": obtained_marks,
             "total_marks": total_marks,
             "correct_answers": correct_answers,
+            "partial_answers": partial_answers,
             "incorrect_answers": incorrect_answers,
             "attempted_questions": attempted_questions,
             "total_questions": total_questions,
@@ -674,7 +700,7 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
             if incorrect_answers
             else float(correct_answers),
         },
-        "domains": domain_rows,
+        "domains": _build_domain_rows(question_rows),
         "questions": question_rows,
         "strengths": strengths,
         "weaknesses": weaknesses,
@@ -710,13 +736,15 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
         row["supporting_skills"] = intelligence.get("supporting_skills", [])
         row["difficulty_label"] = intelligence.get("difficulty_label", row["difficulty"])
         row["difficulty_rating"] = intelligence.get("difficulty_rating", 3)
-        _apply_precise_question_labels(row)
+        row["mapping_source"] = skill_result.get("source", "fallback")
 
     payload["strengths"], payload["weaknesses"] = _build_topic_strengths_and_weaknesses(payload["questions"])
+    payload["domains"] = _build_domain_rows(payload["questions"])
 
     payload["skill_radar"] = _build_skill_radar(
         question_rows=payload["questions"],
-        all_skill_labels=all_skill_labels or DOMAIN_LABELS,
+        all_skill_labels=all_skill_labels
+        or list(dict.fromkeys(row.get("primary_skill") or row.get("domain") for row in payload["questions"] if row.get("primary_skill") or row.get("domain"))),
         average_time_seconds=average_time,
         source=skill_result.get("source", "fallback"),
     )
@@ -758,8 +786,6 @@ async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str,
             if record_exam_id and record_exam_id != requested_exam_id:
                 continue
         candidate_id = _candidate_id_from_record(record)
-        if requested_candidate_id and candidate_id != requested_candidate_id:
-            continue
         if candidate_id:
             attempts_by_candidate[candidate_id].append(record)
 
