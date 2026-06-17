@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from app.services.recommendation import RecommendationService
-from app.services.skill_intelligence import SkillIntelligenceService
+from app.services.skill_intelligence import AIEnrichmentError, SkillIntelligenceService
 
 
 DEFAULT_LABEL = "Pending AI Label"
@@ -723,20 +723,27 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
     question_intelligence = {
         item["question_id"]: item
         for item in skill_result.get("questions", [])
-        if item.get("question_id")
+        if item.get("question_id") is not None
     }
+    missing_ai_labels = [
+        row["question_id"]
+        for row in payload["questions"]
+        if row["question_id"] not in question_intelligence
+    ]
+    if missing_ai_labels:
+        raise AIEnrichmentError(f"ChatGPT did not return labels for question ids: {missing_ai_labels}")
     all_skill_labels = skill_result.get("skills", [])
     for row in payload["questions"]:
         intelligence = question_intelligence.get(row["question_id"], {})
-        if intelligence.get("domain"):
-            row["domain"] = intelligence["domain"]
-        if intelligence.get("topic"):
-            row["topic"] = intelligence["topic"]
-        row["primary_skill"] = intelligence.get("primary_skill") or row["domain"]
+        row["domain"] = _ai_label_or_none(intelligence.get("domain"))
+        row["topic"] = _ai_label_or_none(intelligence.get("topic"))
+        row["primary_skill"] = _ai_label_or_none(intelligence.get("primary_skill"))
         row["supporting_skills"] = intelligence.get("supporting_skills", [])
-        row["difficulty_label"] = intelligence.get("difficulty_label", row["difficulty"])
-        row["difficulty_rating"] = intelligence.get("difficulty_rating", 3)
-        row["mapping_source"] = skill_result.get("source", "fallback")
+        row["difficulty_label"] = intelligence.get("difficulty_label") or row["difficulty"]
+        row["difficulty_rating"] = intelligence.get("difficulty_rating") or 3
+        row["mapping_source"] = intelligence.get("mapping_source") or skill_result.get("source", "ai_error")
+        row["label_quality"] = intelligence.get("label_quality", "specific")
+        row["label_warnings"] = intelligence.get("label_warnings", [])
 
     payload["strengths"], payload["weaknesses"] = _build_topic_strengths_and_weaknesses(payload["questions"])
     payload["domains"] = _build_domain_rows(payload["questions"])
@@ -746,7 +753,7 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
         all_skill_labels=all_skill_labels
         or list(dict.fromkeys(row.get("primary_skill") or row.get("domain") for row in payload["questions"] if row.get("primary_skill") or row.get("domain"))),
         average_time_seconds=average_time,
-        source=skill_result.get("source", "fallback"),
+        source=skill_result.get("source", "ai"),
     )
 
     rankings, top_performer, ranking_summary = _build_rankings(
@@ -1016,3 +1023,10 @@ def _rank_candidate_entries(candidate_analyses: dict[str, dict[str, Any]]) -> li
 def _seconds_to_display(total_seconds: int) -> str:
     minutes, seconds = divmod(total_seconds, 60)
     return f"{minutes}m {seconds}s"
+
+
+def _ai_label_or_none(value: Any) -> str | None:
+    label = str(value or "").strip()
+    if not label or label.lower() == DEFAULT_LABEL.lower():
+        return None
+    return label

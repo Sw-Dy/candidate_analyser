@@ -155,6 +155,35 @@ async def analysis_candidate_attempts(
     return JSONResponse(content={"candidate_id": candidate_id, "attempts": candidate_payload.get("attempts", [])})
 
 
+@app.get("/api/analysis/candidate/{candidate_id}/exam/{exam_id}")
+async def analysis_candidate_exam(
+    candidate_id: int,
+    exam_id: int,
+    force_refresh: bool = Query(default=False),
+) -> JSONResponse:
+    payload, source = await _load_dashboard_payload(
+        force_refresh=force_refresh,
+        candidate_id=candidate_id,
+        exam_id=exam_id,
+    )
+    candidate_payload = _extract_candidate_analysis(payload, candidate_id, exam_id)
+    if candidate_payload is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No analysis found for candidate_id {candidate_id} and exam_id {exam_id}.",
+        )
+    return JSONResponse(
+        content=_build_candidate_exam_analysis_response(
+            analysis_payload=payload,
+            candidate_payload=candidate_payload,
+            candidate_id=candidate_id,
+            exam_id=exam_id,
+            generated_at=payload.get("generated_at"),
+            source=source,
+        )
+    )
+
+
 async def _load_dashboard_payload(
     force_refresh: bool,
     *,
@@ -317,6 +346,150 @@ def _filter_candidate_analysis_by_exam(candidate_payload: dict, exam_id: int | N
             ),
         },
     }
+
+
+def _build_candidate_exam_analysis_response(
+    *,
+    analysis_payload: dict,
+    candidate_payload: dict,
+    candidate_id: int,
+    exam_id: int,
+    generated_at: str | None,
+    source: str,
+) -> dict:
+    attempts = candidate_payload.get("attempts", [])
+    primary_attempt = candidate_payload.get("primary_attempt", {}) or (attempts[0] if attempts else {})
+    compact_analyses = [_build_compact_attempt_analysis(attempt) for attempt in attempts]
+    profile = candidate_payload.get("profile", {})
+    candidate_name = candidate_payload.get("candidate_name") or profile.get("name") or f"Candidate {candidate_id}"
+    return {
+        "generated_at": generated_at,
+        "source": source,
+        "candidate": _build_candidate_basics(candidate_id, candidate_name, profile),
+        "exam": primary_attempt.get("exam") or {"exam_id": exam_id, "name": f"Exam {exam_id}"},
+        "summary": candidate_payload.get("summary", {}),
+        "attempt_summaries": candidate_payload.get("attempt_summaries", []),
+        "questions": _build_question_rows(attempts),
+        "analysis_count": len(attempts),
+        "primary_attempt_id": primary_attempt.get("attempt_id"),
+        "analyses": compact_analyses,
+        "top_performer_analysis": _build_top_performer_analysis_for_exam(analysis_payload, exam_id),
+    }
+
+
+def _build_candidate_basics(candidate_id: int, candidate_name: str, profile: dict) -> dict:
+    return {
+        "candidate_id": candidate_id,
+        "candidate_name": candidate_name,
+        "registration_number": profile.get("registration_number", "Unavailable"),
+        "mobile": profile.get("mobile", "N/A"),
+        "gender": profile.get("gender", "N/A"),
+        "course": profile.get("course", "Not provided"),
+        "batch": profile.get("batch", "Not provided"),
+        "applied_position": profile.get("applied_position", "Not provided"),
+        "languages": profile.get("languages", []),
+        "computer_proficiency": profile.get("computer_proficiency", ""),
+    }
+
+
+def _build_compact_attempt_analysis(attempt: dict) -> dict:
+    return {
+        "attempt_id": attempt.get("attempt_id"),
+        "attempt_source": attempt.get("attempt_source"),
+        "summary": attempt.get("summary", {}),
+        "domains": _clean_domain_rows(attempt.get("domains", [])),
+        "strengths": attempt.get("strengths", []),
+        "weaknesses": attempt.get("weaknesses", []),
+        "skill_radar": attempt.get("skill_radar", {}),
+        "ranking_summary": attempt.get("ranking_summary", {}),
+        "recommendations": attempt.get("recommendations", []),
+        "recommended_courses": attempt.get("recommended_courses", []),
+        "generated_at": attempt.get("generated_at"),
+    }
+
+
+def _build_question_rows(attempts: list[dict]) -> list[dict]:
+    question_rows = []
+    for attempt in attempts:
+        attempt_id = attempt.get("attempt_id")
+        for question in attempt.get("questions", []):
+            question_rows.append(
+                {
+                    "attempt_id": attempt_id,
+                    "question_id": question.get("question_id"),
+                    "question_text": question.get("question_text"),
+                    "question_type": question.get("question_type"),
+                    "domain": _clean_ai_label(question.get("domain")),
+                    "topic": _clean_ai_label(question.get("topic")),
+                    "primary_skill": _clean_ai_label(question.get("primary_skill")),
+                    "supporting_skills": question.get("supporting_skills", []),
+                    "mapping_source": question.get("mapping_source"),
+                    "label_quality": question.get("label_quality"),
+                    "label_warnings": question.get("label_warnings", []),
+                    "difficulty_label": question.get("difficulty_label", question.get("difficulty")),
+                    "difficulty_rating": question.get("difficulty_rating"),
+                    "status": question.get("status"),
+                    "is_answered": question.get("is_answered"),
+                    "is_correct": question.get("is_correct"),
+                    "marks_obtained": question.get("marks_obtained"),
+                    "full_marks": question.get("full_marks"),
+                    "marks_percent": question.get("marks_percent"),
+                    "negative_marks": question.get("negative_marks"),
+                    "time_spent_seconds": question.get("time_spent_seconds"),
+                    "selected_answer": question.get("selected_answer"),
+                    "correct_answer": question.get("correct_answer"),
+                }
+            )
+    return question_rows
+
+
+def _build_top_performer_analysis_for_exam(analysis_payload: dict, exam_id: int) -> dict:
+    top_performer = analysis_payload.get("top_performer", {}) or {}
+    top_candidate_id = int(top_performer.get("candidate_id") or 0)
+    if not top_candidate_id:
+        return {}
+
+    top_candidate_payload = analysis_payload.get("candidate_analyses", {}).get(str(top_candidate_id))
+    if top_candidate_payload:
+        filtered_payload = _filter_candidate_analysis_by_exam(top_candidate_payload, exam_id)
+        if filtered_payload is None:
+            return {"ranking": top_performer}
+        primary_attempt = filtered_payload.get("primary_attempt", {}) or {}
+        profile = filtered_payload.get("profile", {})
+        candidate_name = filtered_payload.get("candidate_name") or profile.get("name") or f"Candidate {top_candidate_id}"
+        return {
+            "candidate": _build_candidate_basics(top_candidate_id, candidate_name, profile),
+            "ranking": top_performer,
+            "summary": filtered_payload.get("summary", {}),
+            "attempt_summaries": filtered_payload.get("attempt_summaries", []),
+            "questions": _build_question_rows(filtered_payload.get("attempts", [])),
+            "domains": _clean_domain_rows(primary_attempt.get("domains", [])),
+            "strengths": primary_attempt.get("strengths", []),
+            "weaknesses": primary_attempt.get("weaknesses", []),
+            "skill_radar": primary_attempt.get("skill_radar", {}),
+            "recommendations": primary_attempt.get("recommendations", []),
+            "recommended_courses": primary_attempt.get("recommended_courses", []),
+            "primary_attempt_id": primary_attempt.get("attempt_id"),
+        }
+
+    return {"ranking": top_performer}
+
+
+def _clean_domain_rows(domains: list[dict]) -> list[dict]:
+    cleaned = []
+    for domain in domains:
+        domain_name = _clean_ai_label(domain.get("domain"))
+        if domain_name is None:
+            continue
+        cleaned.append({**domain, "domain": domain_name})
+    return cleaned
+
+
+def _clean_ai_label(value: object) -> str | None:
+    label = str(value or "").strip()
+    if not label or label.lower() == "pending ai label":
+        return None
+    return label
 
 
 @app.get("/api/analysis/corpus/latest")

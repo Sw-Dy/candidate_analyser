@@ -9,66 +9,39 @@ import httpx
 from app.config import RECOMMENDATION_URL
 
 
-FALLBACK_SKILLS = [
-    "Programming",
-    "Problem Solving",
-    "Reasoning",
-    "Backend",
-    "Frontend",
-    "Database",
-    "Communication",
-    "Design",
-]
-
-SKILL_KEYWORDS = {
-    "Programming": ["code", "program", "python", "java", "function", "algorithm"],
-    "Problem Solving": ["solve", "logic", "algorithm", "aptitude", "problem"],
-    "Reasoning": ["reason", "analogy", "pattern", "aptitude", "logic"],
-    "Backend": ["api", "server", "backend", "flask", "django", "fastapi"],
-    "Frontend": ["frontend", "html", "css", "javascript", "react", "ui"],
-    "Database": ["database", "sql", "query", "dbms", "table"],
-    "Communication": ["communication", "email", "writing", "verbal", "stakeholder"],
-    "Design": ["design", "ux", "figma", "wireframe", "layout"],
-    "ML": ["model", "dataset", "training", "classification", "regression"],
-    "DevOps": ["docker", "deployment", "pipeline", "linux", "cloud"],
+PLACEHOLDER_LABELS = {"", "Pending AI Label", "pending ai label", "None", "none", "null"}
+VAGUE_DOMAIN_LABELS = {
+    "general",
+    "concepts",
+    "technical",
+    "technical knowledge",
+    "programming",
+    "software",
+    "database",
+    "networking",
+    "web",
+    "backend",
+    "frontend",
+    "computer science",
+    "information technology",
+}
+VAGUE_TOPIC_LABELS = {
+    "general",
+    "concepts",
+    "technical",
+    "technical knowledge",
+    "programming",
+    "software",
+    "database",
+    "networking",
+    "web",
+    "backend",
+    "frontend",
 }
 
 
-CONCISE_TOPIC_RULES = [
-    ("HTTP 404", ["status code", "page not found", "404"]),
-    ("DNS", ["domain name system", "dns"]),
-    ("URL Flow", ["type a url", "url in the browser", "url in browser", "dns", "http request"]),
-    ("REST", ["rest api", "restful", "http methods", "get post put delete"]),
-    ("API", ["api"]),
-    (".NET", ["c# framework", "asp.net", ".net core", "dot net"]),
-    ("MVC", ["mvc", "model-view-controller", "model view controller"]),
-    ("DI", ["dependency injection"]),
-    ("Algorithm", ["algorithm"]),
-    ("NoSQL", ["nosql", "mongodb", "mongo db", "mongo"]),
-    ("SQL", ["sql", "query language"]),
-    ("Database", ["database", "dbms", "table"]),
-    ("Django", ["django"]),
-    ("Responsive", ["responsive design", "reponvide design", "responsvide design"]),
-    ("Hex Color", ["hexcode", "hex code", "hexadecimal code"]),
-    ("HTML/CSS", ["html", "css"]),
-    ("JavaScript", ["javascript", "dom"]),
-    ("React", ["react"]),
-    ("UI", ["frontend", "ui", "vue"]),
-    ("Git", ["what is git", " git?", "git is", "git "]),
-]
-
-BROAD_SKILLS = {
-    "Backend",
-    "Frontend",
-    "Security",
-    "DevOps",
-    "ML",
-    "Programming",
-    "Problem Solving",
-    "Reasoning",
-    "General Aptitude",
-    "General",
-}
+class AIEnrichmentError(RuntimeError):
+    pass
 
 
 class SkillIntelligenceService:
@@ -87,33 +60,51 @@ class SkillIntelligenceService:
             exam=exam,
             questions=questions,
         )
+        retry_body = None
+
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(RECOMMENDATION_URL, json={"content": prompt})
-                response.raise_for_status()
-                try:
-                    body = response.json()
-                except ValueError:
-                    body = {"response": response.text}
+            body = await self._post_prompt(prompt)
             parsed = self._parse_response(body)
-            source = "ai"
-        except (httpx.HTTPError, ValueError, json.JSONDecodeError):
-            parsed = self._fallback_enrichment(candidate_profile, exam, questions)
-            body = None
-            source = "fallback"
+            for _ in range(2):
+                retry_body = await self._retry_incomplete_ai_labels(
+                    parsed=parsed,
+                    candidate_profile=candidate_profile,
+                    exam=exam,
+                    questions=questions,
+                )
+                if retry_body is None:
+                    break
+                parsed = self._merge_retry_response(parsed, retry_body, questions)
+
+            parsed = self._complete_question_items(parsed, questions)
+            self._raise_for_missing_ai_labels(parsed)
+        except (httpx.HTTPError, ValueError, json.JSONDecodeError, AIEnrichmentError) as exc:
+            raise AIEnrichmentError(
+                f"ChatGPT labeling failed for {len(questions)} question(s): {exc}"
+            ) from exc
 
         return {
             "skills": parsed["skills"],
             "questions": parsed["questions"],
-            "source": source,
+            "source": "ai",
             "raw_api": {
                 "url": RECOMMENDATION_URL,
                 "request_body": {"content": prompt},
-                "ok": source == "ai",
-                "error": None if source == "ai" else "AI enrichment fallback used",
+                "ok": True,
+                "error": None,
                 "body": body,
+                "retry_body": retry_body,
             },
         }
+
+    async def _post_prompt(self, prompt: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(RECOMMENDATION_URL, json={"content": prompt})
+            response.raise_for_status()
+            try:
+                return response.json()
+            except ValueError:
+                return {"response": response.text}
 
     def _build_prompt(
         self,
@@ -122,74 +113,176 @@ class SkillIntelligenceService:
         exam: dict[str, Any],
         questions: list[dict[str, Any]],
     ) -> str:
-        compact_questions = [
-            {
-                "question_id": question["question_id"],
-                "question_text": question["question_text"],
-                "question_type": question["question_type"],
-                "marks_obtained": question.get("marks_obtained", 0),
-                "full_marks": question.get("full_marks", 0),
-                "status": question.get("status"),
-            }
-            for question in questions
-        ]
+        compact_questions = [self._question_prompt_payload(question) for question in questions]
         compact_profile = {
             "applied_role": candidate_profile.get("position"),
             "self_reported_proficiency": candidate_profile.get("computer_proficiency"),
             "languages": candidate_profile.get("languages", []),
         }
         instructions = {
-            "skills": [
-                "Return 5 to 8 concise skill labels relevant to the role and assessment.",
-                "Prefer specialised labels like HTTP, SQL, NoSQL, REST, DNS, .NET, JavaScript, React, Database.",
-                "Avoid broad labels like Backend, Frontend, Programming, or Problem Solving when a precise technical skill is visible.",
+            "hard_requirements": [
+                "Return strict JSON only.",
+                "Return exactly one questions item for every input question_id.",
+                "Do not return null, empty strings, Pending AI Label, General, Concepts, Other, or Miscellaneous for domain/topic/primary_skill.",
+                "Do not return vague one-word domains such as Database, Networking, Programming, Web, Backend, Frontend, Software, or Technical.",
+                "Domain must be a specific assessment area or subfield, usually 2 to 5 words.",
+                "Topic must be the exact concept being tested; one-word topics are allowed only for precise acronyms or named technologies.",
+                "Use question_text, correct_answer, selected_answer, and question_type when deriving labels.",
+                "The labels must be generated by you from the supplied question content, not copied from placeholder data.",
             ],
-            "questions": [
-                "For every question, assign one primary_skill and up to two supporting_skills from the generated skill labels.",
-                "Infer domain and topic from the question text using your own labels; do not choose from a fixed backend list.",
-                "Keep domain broad but role-relevant, for example Software Engineering, Data Analysis, HR, Finance, Networking, Database, Web Development, or Aptitude when appropriate.",
-                "Keep topic concise and specialised, usually 1 to 4 words.",
-                "Difficulty must be relative to the applied role/position and question complexity, not copied from the exam metadata.",
-                "Add difficulty_label using only Easy, Intermediate, or Hard.",
-                "Add difficulty_rating as an integer from 1 to 5.",
-            ],
-            "format": {
-                "skills": ["HTTP", "SQL"],
+            "json_shape": {
+                "skills": ["specific skill label"],
                 "questions": [
                     {
-                        "question_id": 1,
-                        "domain": "Web Development",
-                        "topic": "HTTP 404",
-                        "primary_skill": "HTTP",
-                        "supporting_skills": ["Web"],
-                        "difficulty_label": "Intermediate",
-                        "difficulty_rating": 3,
+                        "question_id": "same numeric id from input",
+                        "domain": "specific non-vague domain label",
+                        "topic": "specific concept tested",
+                        "primary_skill": "specific skill label",
+                        "supporting_skills": ["optional specific skill label"],
+                        "difficulty_label": "Easy | Intermediate | Hard",
+                        "difficulty_rating": "integer 1 to 5",
                     }
                 ],
             },
         }
         return (
-            "Analyze the candidate applied role and assessment questions. Return strict JSON only. "
+            "You are the authoritative labeling service for candidate assessment analytics. "
+            "Generate fresh, specific domain/topic/skill labels from the provided question content. "
             f"Instructions: {json.dumps(instructions)} "
             f"Candidate Profile: {json.dumps(compact_profile)} "
             f"Exam: {json.dumps(exam)} "
             f"Questions: {json.dumps(compact_questions)}"
         )
 
+    async def _retry_incomplete_ai_labels(
+        self,
+        *,
+        parsed: dict[str, Any],
+        candidate_profile: dict[str, Any],
+        exam: dict[str, Any],
+        questions: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        questions_to_fix = self._questions_needing_ai_retry(parsed, questions)
+        if not questions_to_fix:
+            return None
+
+        retry_prompt = (
+            "Your previous response had missing or vague labels. Return strict JSON only as an object "
+            "with skills and questions arrays. Fix every listed question. "
+            "Domain must be specific and non-vague, usually 2 to 5 words. "
+            "Topic must be the exact concept being tested. "
+            "Do not use null, General, Concepts, Database, Networking, Programming, Web, Backend, Frontend, Software, or Technical as labels. "
+            "Every question must include question_id, domain, topic, primary_skill, supporting_skills, "
+            "difficulty_label, and difficulty_rating. "
+            f"Candidate Profile: {json.dumps(candidate_profile)} "
+            f"Exam: {json.dumps(exam)} "
+            f"Questions to fix, with validation_errors: {json.dumps(questions_to_fix)}"
+        )
+        return await self._post_prompt(retry_prompt)
+
+    def _questions_needing_ai_retry(
+        self,
+        parsed: dict[str, Any],
+        questions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        items_by_id = self._items_by_question_id(parsed, questions)
+        questions_to_fix = []
+        for question in questions:
+            question_id = int(question.get("question_id") or 0)
+            item = items_by_id.get(question_id)
+            errors = ["missing_question_label"] if item is None else self._label_errors(item)
+            if errors:
+                payload = self._question_prompt_payload(question)
+                payload["validation_errors"] = errors
+                questions_to_fix.append(payload)
+        return questions_to_fix
+
+    def _merge_retry_response(
+        self,
+        parsed: dict[str, Any],
+        retry_body: dict[str, Any],
+        questions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        retry_parsed = self._parse_response(retry_body)
+        merged_by_id = self._items_by_question_id(parsed, questions)
+        retry_by_id = self._items_by_question_id(retry_parsed, questions)
+        retry_items = list(retry_parsed.get("questions", []))
+        retry_index = 0
+
+        for question in questions:
+            question_id = int(question.get("question_id") or 0)
+            current_item = merged_by_id.get(question_id)
+            if current_item is not None and not self._label_errors(current_item):
+                continue
+            retry_item = retry_by_id.get(question_id)
+            if retry_item is None and retry_index < len(retry_items):
+                retry_item = retry_items[retry_index]
+                retry_item["question_id"] = question_id
+                retry_index += 1
+            if retry_item is not None:
+                merged_by_id[question_id] = retry_item
+
+        skills = list(dict.fromkeys(parsed.get("skills", []) + retry_parsed.get("skills", [])))
+        return {"skills": skills, "questions": list(merged_by_id.values())}
+
+    def _complete_question_items(
+        self,
+        parsed: dict[str, Any],
+        questions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        skills = [str(item).strip() for item in parsed.get("skills", []) if str(item).strip()]
+        completed_items = []
+        used_question_ids: set[int] = set()
+
+        for index, item in enumerate(parsed.get("questions", [])):
+            if not isinstance(item, dict):
+                continue
+            normalized = self._normalize_question_item(item)
+            if not normalized.get("question_id") and index < len(questions):
+                normalized["question_id"] = int(questions[index].get("question_id") or 0)
+            if not normalized.get("question_id"):
+                continue
+            errors = self._label_errors(normalized)
+            normalized["label_quality"] = "needs_review" if errors else "specific"
+            normalized["label_warnings"] = errors
+            normalized["mapping_source"] = "ai"
+            completed_items.append(normalized)
+            used_question_ids.add(normalized["question_id"])
+
+        for question in questions:
+            question_id = int(question.get("question_id") or 0)
+            if question_id and question_id not in used_question_ids:
+                completed_items.append(self._empty_question_item(question, "ai_missing"))
+
+        question_skills = [item["primary_skill"] for item in completed_items if item.get("primary_skill")]
+        return {
+            "skills": list(dict.fromkeys(skills + question_skills))[:8],
+            "questions": completed_items,
+        }
+
     def _parse_response(self, body: dict[str, Any]) -> dict[str, Any]:
-        if isinstance(body.get("skills"), list) and isinstance(body.get("questions"), list):
+        if isinstance(body.get("questions"), list):
             parsed = body
         else:
             response_text = str(body.get("response", "")).strip()
             parsed = json.loads(self._extract_json(response_text))
-        skills = [str(item).strip() for item in parsed.get("skills", []) if str(item).strip()]
+
         question_items = parsed.get("questions", [])
-        if not skills or not isinstance(question_items, list):
-            raise ValueError("Incomplete enrichment response")
-        return {
-            "skills": skills[:8],
-            "questions": [self._normalize_question_item(item) for item in question_items if isinstance(item, dict)],
-        }
+        if not isinstance(question_items, list) or not question_items:
+            raise ValueError("Incomplete enrichment response: missing questions array")
+
+        normalized_questions = [
+            self._normalize_question_item(item)
+            for item in question_items
+            if isinstance(item, dict)
+        ]
+        skills = [str(item).strip() for item in parsed.get("skills", []) if str(item).strip()]
+        if not skills:
+            skills = [item["primary_skill"] for item in normalized_questions if item.get("primary_skill")]
+        if not skills:
+            raise ValueError("Incomplete enrichment response: missing skills")
+
+        return {"skills": list(dict.fromkeys(skills))[:8], "questions": normalized_questions}
 
     def _extract_json(self, response_text: str) -> str:
         cleaned = response_text.strip()
@@ -203,88 +296,22 @@ class SkillIntelligenceService:
             raise json.JSONDecodeError("No JSON object found", response_text, 0)
         return match.group(0)
 
-    def _fallback_enrichment(
-        self,
-        candidate_profile: dict[str, Any],
-        exam: dict[str, Any],
-        questions: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        role_text = " ".join(
-            str(value or "")
-            for value in [
-                candidate_profile.get("position"),
-                candidate_profile.get("computer_proficiency"),
-                exam.get("name"),
-            ]
-        ).lower()
-
-        selected_skills = []
-        for skill in FALLBACK_SKILLS:
-            keywords = SKILL_KEYWORDS.get(skill, [skill.lower()])
-            if any(keyword in role_text for keyword in keywords):
-                selected_skills.append(skill)
-        if not selected_skills:
-            selected_skills = FALLBACK_SKILLS[:6]
-
-        selected_skills = list(dict.fromkeys(selected_skills))[:8]
-        question_items = [self._fallback_question_item(question, selected_skills) for question in questions]
-        question_skills = [item["primary_skill"] for item in question_items if item.get("primary_skill")]
-        skills = list(dict.fromkeys(question_skills + selected_skills))[:8]
-        return {"skills": skills, "questions": question_items}
-
-    def _fallback_question_item(
-        self,
-        question: dict[str, Any],
-        selected_skills: list[str],
-    ) -> dict[str, Any]:
-        corpus = " ".join(
-            str(question.get(field, "")) for field in ["question_text", "domain", "topic", "question_type"]
-        ).lower()
-        topic = self._fallback_topic(question)
-        primary_skill = topic if topic not in {"General", "Concepts"} else None
-        supporting_skills: list[str] = []
-
-        if primary_skill is None:
-            for skill in selected_skills:
-                if skill not in BROAD_SKILLS and any(keyword in corpus for keyword in SKILL_KEYWORDS.get(skill, [])):
-                    primary_skill = skill
-                    break
-        if primary_skill is None:
-            primary_skill = selected_skills[0]
-
-        for skill in selected_skills:
-            if skill == primary_skill:
-                continue
-            if any(keyword in corpus for keyword in SKILL_KEYWORDS.get(skill, [])):
-                supporting_skills.append(skill)
-            if len(supporting_skills) == 2:
-                break
-
-        difficulty_rating = self._fallback_difficulty_rating(question)
-        return {
-            "question_id": question["question_id"],
-            "domain": self._fallback_domain(question),
-            "topic": topic,
-            "primary_skill": primary_skill,
-            "supporting_skills": supporting_skills,
-            "difficulty_label": self._difficulty_label(difficulty_rating),
-            "difficulty_rating": difficulty_rating,
-        }
-
     def _normalize_question_item(self, item: dict[str, Any]) -> dict[str, Any]:
         rating = int(item.get("difficulty_rating") or 3)
         rating = max(1, min(5, rating))
-        primary_skill = str(item.get("primary_skill") or "").strip() or "Problem Solving"
-        topic = self._normalize_topic(str(item.get("topic") or primary_skill).strip())
-        domain = self._normalize_freeform_label(str(item.get("domain") or "General"))
-        supporting_skills = [
-            str(skill).strip()
-            for skill in item.get("supporting_skills", [])
-            if str(skill).strip() and str(skill).strip() != primary_skill
-        ][:2]
         label = str(item.get("difficulty_label") or self._difficulty_label(rating)).strip().title()
         if label not in {"Easy", "Intermediate", "Hard"}:
             label = self._difficulty_label(rating)
+
+        primary_skill = self._clean_label(item.get("primary_skill"))
+        topic = self._clean_label(item.get("topic"))
+        domain = self._clean_label(item.get("domain"))
+        supporting_skills = [
+            skill
+            for skill in (self._clean_label(value) for value in item.get("supporting_skills", []))
+            if skill and skill != primary_skill
+        ][:2]
+
         return {
             "question_id": int(item.get("question_id") or 0),
             "domain": domain,
@@ -293,44 +320,101 @@ class SkillIntelligenceService:
             "supporting_skills": supporting_skills,
             "difficulty_label": label,
             "difficulty_rating": rating,
+            "mapping_source": "ai",
         }
 
-    def _fallback_topic(self, question: dict[str, Any]) -> str:
-        corpus = " ".join(
-            str(question.get(field, "")) for field in ["question_text", "domain", "topic", "question_type"]
-        ).lower()
-        for topic, keywords in CONCISE_TOPIC_RULES:
-            if any(keyword in corpus for keyword in keywords):
-                return topic
-        current_topic = str(question.get("topic") or "").strip()
-        return self._normalize_topic(current_topic or "General")
+    def _raise_for_missing_ai_labels(self, parsed: dict[str, Any]) -> None:
+        bad_items = [
+            {"question_id": item.get("question_id"), "errors": errors}
+            for item in parsed.get("questions", [])
+            if isinstance(item, dict)
+            for errors in [self._label_errors(item)]
+            if any(error.startswith("missing_") for error in errors)
+        ]
+        if bad_items:
+            raise AIEnrichmentError(f"ChatGPT returned missing labels: {bad_items}")
 
-    def _normalize_topic(self, topic: str) -> str:
-        topic = re.sub(r"\s+", " ", topic).strip()
-        if not topic:
-            return "General"
-        return " ".join(topic.split()[:4])
+    def _items_by_question_id(
+        self,
+        parsed: dict[str, Any],
+        questions: list[dict[str, Any]],
+    ) -> dict[int, dict[str, Any]]:
+        items_by_id: dict[int, dict[str, Any]] = {}
+        for index, item in enumerate(parsed.get("questions", [])):
+            if not isinstance(item, dict):
+                continue
+            question_id = int(item.get("question_id") or 0)
+            if not question_id and index < len(questions):
+                question_id = int(questions[index].get("question_id") or 0)
+                item["question_id"] = question_id
+            if question_id:
+                items_by_id[question_id] = item
+        return items_by_id
 
-    def _fallback_domain(self, question: dict[str, Any]) -> str:
-        current_domain = str(question.get("domain") or "").strip()
-        if current_domain and current_domain != "Pending AI Label":
-            return self._normalize_freeform_label(current_domain)
-        return "General"
+    def _question_prompt_payload(self, question: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "question_id": question.get("question_id"),
+            "question_text": question.get("question_text"),
+            "question_type": question.get("question_type"),
+            "selected_answer": question.get("selected_answer"),
+            "correct_answer": question.get("correct_answer"),
+            "marks_obtained": question.get("marks_obtained", 0),
+            "full_marks": question.get("full_marks", 0),
+            "status": question.get("status"),
+        }
 
-    def _normalize_freeform_label(self, value: str) -> str:
-        cleaned = re.sub(r"\s+", " ", value).strip()
-        if not cleaned:
-            return "General"
-        return " ".join(cleaned.split()[:4])
+    def _empty_question_item(self, question: dict[str, Any], source: str) -> dict[str, Any]:
+        return {
+            "question_id": int(question.get("question_id") or 0),
+            "domain": None,
+            "topic": None,
+            "primary_skill": None,
+            "supporting_skills": [],
+            "difficulty_label": None,
+            "difficulty_rating": None,
+            "mapping_source": source,
+        }
 
-    def _fallback_difficulty_rating(self, question: dict[str, Any]) -> int:
-        text = str(question.get("question_text", ""))
-        options = re.findall(r"\b[A-Z]{2,}\b", text)
-        if len(text) > 180 or "coding" in text.lower() or "sql" in text.lower():
-            return 4
-        if len(text) > 90 or len(options) > 4:
-            return 3
-        return 2
+    def _label_errors(self, item: dict[str, Any]) -> list[str]:
+        errors = []
+        domain = str(item.get("domain") or "").strip()
+        topic = str(item.get("topic") or "").strip()
+        primary_skill = str(item.get("primary_skill") or "").strip()
+
+        if self._is_placeholder_label(domain):
+            errors.append("missing_domain")
+        elif self._is_vague_domain(domain):
+            errors.append("vague_domain")
+
+        if self._is_placeholder_label(topic):
+            errors.append("missing_topic")
+        elif self._is_vague_topic(topic):
+            errors.append("vague_topic")
+
+        if self._is_placeholder_label(primary_skill):
+            errors.append("missing_primary_skill")
+        elif self._is_vague_topic(primary_skill):
+            errors.append("vague_primary_skill")
+
+        return errors
+
+    def _is_vague_domain(self, value: str) -> bool:
+        label = re.sub(r"\s+", " ", value).strip().lower()
+        return label in VAGUE_DOMAIN_LABELS or len(label.split()) < 2
+
+    def _is_vague_topic(self, value: str) -> bool:
+        label = re.sub(r"\s+", " ", value).strip().lower()
+        return label in VAGUE_TOPIC_LABELS
+
+    def _clean_label(self, value: Any) -> str | None:
+        label = re.sub(r"\s+", " ", str(value or "")).strip()
+        if self._is_placeholder_label(label):
+            return None
+        return label
+
+    def _is_placeholder_label(self, value: Any) -> bool:
+        label = str(value or "").strip()
+        return label in PLACEHOLDER_LABELS or label.lower() in PLACEHOLDER_LABELS
 
     def _difficulty_label(self, rating: int) -> str:
         if rating >= 4:

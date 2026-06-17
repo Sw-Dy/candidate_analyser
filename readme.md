@@ -218,6 +218,31 @@ GET /api/analysis/candidate/12254/attempts
 
 Returns only that candidate's analysed attempt list.
 
+### One candidate's analyses for one exam
+
+```text
+GET /api/analysis/candidate/{candidate_id}/exam/{exam_id}
+```
+
+Example:
+
+```text
+GET /api/analysis/candidate/12254/exam/9
+```
+
+Returns a compact candidate/exam payload with:
+
+- basic candidate details
+- exam details
+- candidate summary for that exam
+- attempt summaries
+- `questions`, containing all selected-candidate questions with topic, domain, marks, status, answers, and skill labels
+- `primary_attempt_id`
+- `analyses`, containing compact analysed attempts for that candidate and exam
+- `top_performer_analysis`, containing the best-ranked candidate's compact analysis for the same exam
+
+The compact response excludes repeated `student` and `exam` objects inside each attempt, cohort-level `rankings`, `top_performer`, and heavy debug payloads such as `raw_apis`.
+
 ### Dashboard overview
 
 ```text
@@ -272,6 +297,7 @@ For each analysed attempt, the app sends a compact prompt containing:
 - languages
 - exam info
 - question ids and question text
+- selected answer and correct answer
 - per-question obtained marks and full marks
 
 The prompt asks the ChatGPT API to return strict JSON:
@@ -294,7 +320,7 @@ That result becomes:
 - `difficulty_rating`
 - `skill_radar`
 
-The backend does not overwrite successful ChatGPT domain/topic labels with a fixed hardcoded list. If the ChatGPT API fails, the app uses conservative fallback labels so the dashboard can still load.
+Domain, topic, and primary skill labels are ChatGPT-only. The backend validates that the ChatGPT response is specific, retries missing or vague labels through the same ChatGPT URL, and fails the request if usable labels are still not returned. It does not replace missing labels with hardcoded local topic/domain guesses.
 
 ### Recommendations and courses
 
@@ -480,6 +506,12 @@ Get one candidate's attempts:
 
 ```bash
 curl.exe "http://127.0.0.1:8000/api/analysis/candidate/12254/attempts"
+```
+
+Get one candidate's analyses for one exam:
+
+```bash
+curl.exe "http://127.0.0.1:8000/api/analysis/candidate/12254/exam/9"
 ```
 
 Open dashboard:
