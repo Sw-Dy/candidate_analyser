@@ -79,10 +79,10 @@ curl.exe "http://127.0.0.1:8000/api/analysis/candidate/13104/attempts?exam_id=9"
 ### Candidate Exam Analyses: Candidate And Exam
 
 ```bash
-curl.exe "http://127.0.0.1:8000/api/analysis/candidate/13104/exam/9"
+curl.exe "http://127.0.0.1:8000/api/analysis/candidate-exam?candidate_id=13104&exam_id=9"
 ```
 
-Returns one candidate's basic details, exam details, summary, attempt summaries, all selected-candidate questions with ChatGPT-generated topic/domain/marks, compact attempt analyses, and the top performer analysis for that exam. Debug payloads such as `raw_apis` are excluded.
+Returns a non-duplicated candidate/exam payload with `selected_candidate_report` and `benchmark`. The selected report contains candidate basics, explicit raw/weighted/marks metrics, attempts, questions, strengths, weaknesses, and traceable recommendations. The benchmark contains the canonical ranked leaderboard and cohort averages for the selected exam. Debug payloads such as `raw_apis` are excluded.
 
 ### Dashboard Analytics Wrapper: Default Exam
 
@@ -155,7 +155,7 @@ force_refresh=true|false
 
 final api 
 
-http://127.0.0.1:8000/api/analysis/candidate/13104/exam/9
+http://127.0.0.1:8000/api/analysis/candidate-exam?candidate_id=13104&exam_id=9
 ```
 
 `force_refresh` is accepted for older callers; all endpoints load live data.

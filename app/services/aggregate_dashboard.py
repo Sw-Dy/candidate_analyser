@@ -104,6 +104,7 @@ def _build_multi_candidate_dashboard(
 ) -> dict[str, Any]:
     ranked_candidates = list(analysis_payload.get("ranked_candidates", []))
     candidate_analyses = analysis_payload.get("candidate_analyses", {})
+    _validate_multi_dashboard_ranking_consistency(analysis_payload, ranked_candidates, candidate_analyses)
     top_performer = analysis_payload.get("top_performer", {}) or (ranked_candidates[0] if ranked_candidates else {})
     top_performer_entry = candidate_analyses.get(str(top_performer.get("candidate_id"))) or {}
     selected_id = selected_candidate_id or top_performer.get("candidate_id")
@@ -160,6 +161,21 @@ def _build_multi_exam_summary(selected_entry: dict[str, Any], selected_exam_id: 
     return {"name": "All available candidate attempts", "exam_id": 0}
 
 
+def _validate_multi_dashboard_ranking_consistency(
+    analysis_payload: dict[str, Any],
+    ranked_candidates: list[dict[str, Any]],
+    candidate_analyses: dict[str, Any],
+) -> None:
+    expected_count = len(ranked_candidates)
+    if int(analysis_payload.get("candidate_count") or 0) != expected_count:
+        raise ValueError("Dashboard ranking validation failed: candidate_count does not match ranked_candidates length.")
+    if len(candidate_analyses) != expected_count:
+        raise ValueError("Dashboard ranking validation failed: candidate_analyses count does not match ranked_candidates length.")
+    ranks = [int(row.get("rank") or 0) for row in ranked_candidates]
+    if sorted(ranks) != list(range(1, expected_count + 1)):
+        raise ValueError("Dashboard ranking validation failed: ranked candidate ranks are inconsistent.")
+
+
 def _build_multi_selected_candidate_detail(
     selected_entry: dict[str, Any],
     ranked_candidates: list[dict[str, Any]],
@@ -182,7 +198,8 @@ def _build_multi_selected_candidate_detail(
             }
             questions.append(question_row)
 
-    strengths, weaknesses = _build_topic_strengths_and_weaknesses(questions)
+    strengths = _unique_attempt_labels(selected_entry, "strengths")
+    weaknesses = _unique_attempt_labels(selected_entry, "weaknesses")
 
     return {
         "candidate_id": candidate_id,
@@ -225,36 +242,14 @@ def _build_multi_selected_candidate_detail(
     }
 
 
-def _build_topic_strengths_and_weaknesses(questions: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
-    stats_by_topic: dict[str, dict[str, float]] = {}
-    for question in questions:
-        topic = str(question.get("topic") or question.get("primary_skill") or "General").strip() or "General"
-        stats = stats_by_topic.setdefault(topic, {"questions": 0, "marks_obtained": 0.0, "total_marks": 0.0})
-        stats["questions"] += 1
-        stats["marks_obtained"] += float(question.get("marks_obtained") or 0)
-        stats["total_marks"] += float(question.get("full_marks") or 0)
-
-    strengths = []
-    weaknesses = []
-    for topic, stats in stats_by_topic.items():
-        score = round((stats["marks_obtained"] / stats["total_marks"]) * 100, 2) if stats["total_marks"] else 0.0
-        item = {
-            "topic": topic,
-            "label": f"{topic} ({round(stats['marks_obtained'], 2)}/{round(stats['total_marks'], 2)} marks)",
-            "total": int(stats["questions"]),
-            "score": score,
-        }
-        if score >= 70:
-            strengths.append(item)
-        elif score < 50:
-            weaknesses.append(item)
-
-    def sort_key(item: dict[str, Any]) -> tuple[float, int, str]:
-        return (float(item["score"]), int(item["total"]), str(item["topic"]))
-
-    strengths.sort(key=sort_key, reverse=True)
-    weaknesses.sort(key=sort_key)
-    return [item["label"] for item in strengths], [item["label"] for item in weaknesses]
+def _unique_attempt_labels(selected_entry: dict[str, Any], key: str) -> list[str]:
+    labels = []
+    for attempt in selected_entry.get("attempts", []):
+        for value in attempt.get(key, []):
+            label = str(value or "").strip()
+            if label:
+                labels.append(label)
+    return list(dict.fromkeys(labels))
 
 
 def _build_multi_top_performer_analysis(

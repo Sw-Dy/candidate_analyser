@@ -115,6 +115,36 @@ async def analysis_latest() -> JSONResponse:
     return JSONResponse(content=payload)
 
 
+@app.get("/api/analysis/candidate-exam")
+@app.get("/api/analysis/candidate/exam")
+async def analysis_candidate_exam_query(
+    candidate_id: int = Query(...),
+    exam_id: int = Query(...),
+    force_refresh: bool = Query(default=False),
+) -> JSONResponse:
+    payload, source = await _load_dashboard_payload(
+        force_refresh=force_refresh,
+        candidate_id=candidate_id,
+        exam_id=exam_id,
+    )
+    candidate_payload = _extract_candidate_analysis(payload, candidate_id, exam_id)
+    if candidate_payload is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No analysis found for candidate_id {candidate_id} and exam_id {exam_id}.",
+        )
+    return JSONResponse(
+        content=_build_candidate_exam_analysis_response(
+            analysis_payload=payload,
+            candidate_payload=candidate_payload,
+            candidate_id=candidate_id,
+            exam_id=exam_id,
+            generated_at=payload.get("generated_at"),
+            source=source,
+        )
+    )
+
+
 @app.get("/api/analysis/candidate/{candidate_id}")
 async def analysis_candidate(
     candidate_id: int,
@@ -336,11 +366,11 @@ def _filter_candidate_analysis_by_exam(candidate_payload: dict, exam_id: int | N
             "best_exam": primary_attempt.get("exam", {}).get("name"),
             "best_marks_percent": primary_attempt.get("summary", {}).get("overall_score_percent", 0),
             "average_accuracy": round(
-                sum(float(item.get("summary", {}).get("accuracy") or 0) for item in attempts) / len(attempts),
+                sum(float(item.get("summary", {}).get("raw_accuracy", item.get("summary", {}).get("accuracy") or 0)) for item in attempts) / len(attempts),
                 2,
             ),
             "average_marks_percent": round(
-                sum(float(item.get("summary", {}).get("overall_score_percent") or 0) for item in attempts)
+                sum(float(item.get("summary", {}).get("marks_percent", item.get("summary", {}).get("overall_score_percent") or 0)) for item in attempts)
                 / len(attempts),
                 2,
             ),
@@ -359,22 +389,37 @@ def _build_candidate_exam_analysis_response(
 ) -> dict:
     attempts = candidate_payload.get("attempts", [])
     primary_attempt = candidate_payload.get("primary_attempt", {}) or (attempts[0] if attempts else {})
-    compact_analyses = [_build_compact_attempt_analysis(attempt) for attempt in attempts]
     profile = candidate_payload.get("profile", {})
     candidate_name = candidate_payload.get("candidate_name") or profile.get("name") or f"Candidate {candidate_id}"
-    return {
+    ranked_rows = _rank_candidates_for_exam(analysis_payload, exam_id)
+    selected_ranking = next(
+        (row for row in ranked_rows if int(row.get("candidate_id") or 0) == candidate_id),
+        {},
+    )
+    response = {
         "generated_at": generated_at,
         "source": source,
-        "candidate": _build_candidate_basics(candidate_id, candidate_name, profile),
         "exam": primary_attempt.get("exam") or {"exam_id": exam_id, "name": f"Exam {exam_id}"},
-        "summary": candidate_payload.get("summary", {}),
-        "attempt_summaries": candidate_payload.get("attempt_summaries", []),
-        "questions": _build_question_rows(attempts),
-        "analysis_count": len(attempts),
-        "primary_attempt_id": primary_attempt.get("attempt_id"),
-        "analyses": compact_analyses,
-        "top_performer_analysis": _build_top_performer_analysis_for_exam(analysis_payload, exam_id),
+        "selected_candidate_report": {
+            "candidate": _build_candidate_basics(candidate_id, candidate_name, profile),
+            "rank": selected_ranking.get("rank"),
+            "total_candidates": len(ranked_rows),
+            "summary": candidate_payload.get("summary", {}),
+            "metrics": _build_candidate_metric_summary(candidate_payload),
+            "attempts": _build_attempt_report_rows(attempts),
+            "domains": _clean_domain_rows(primary_attempt.get("domains", [])),
+            "strengths": primary_attempt.get("strengths", []),
+            "weaknesses": primary_attempt.get("weaknesses", []),
+            "skill_radar": primary_attempt.get("skill_radar", {}),
+            "recommendations": primary_attempt.get("recommendations", []),
+            "recommended_courses": primary_attempt.get("recommended_courses", []),
+            "questions": _build_question_rows(attempts),
+            "primary_attempt_id": primary_attempt.get("attempt_id"),
+        },
+        "benchmark": _build_exam_benchmark(exam_id, ranked_rows),
     }
+    _validate_candidate_exam_response(response, candidate_id)
+    return response
 
 
 def _build_candidate_basics(candidate_id: int, candidate_name: str, profile: dict) -> dict:
@@ -389,22 +434,6 @@ def _build_candidate_basics(candidate_id: int, candidate_name: str, profile: dic
         "applied_position": profile.get("applied_position", "Not provided"),
         "languages": profile.get("languages", []),
         "computer_proficiency": profile.get("computer_proficiency", ""),
-    }
-
-
-def _build_compact_attempt_analysis(attempt: dict) -> dict:
-    return {
-        "attempt_id": attempt.get("attempt_id"),
-        "attempt_source": attempt.get("attempt_source"),
-        "summary": attempt.get("summary", {}),
-        "domains": _clean_domain_rows(attempt.get("domains", [])),
-        "strengths": attempt.get("strengths", []),
-        "weaknesses": attempt.get("weaknesses", []),
-        "skill_radar": attempt.get("skill_radar", {}),
-        "ranking_summary": attempt.get("ranking_summary", {}),
-        "recommendations": attempt.get("recommendations", []),
-        "recommended_courses": attempt.get("recommended_courses", []),
-        "generated_at": attempt.get("generated_at"),
     }
 
 
@@ -443,36 +472,123 @@ def _build_question_rows(attempts: list[dict]) -> list[dict]:
     return question_rows
 
 
-def _build_top_performer_analysis_for_exam(analysis_payload: dict, exam_id: int) -> dict:
-    top_performer = analysis_payload.get("top_performer", {}) or {}
-    top_candidate_id = int(top_performer.get("candidate_id") or 0)
-    if not top_candidate_id:
-        return {}
+def _build_candidate_metric_summary(candidate_payload: dict) -> dict:
+    attempts = candidate_payload.get("attempts", [])
+    total_questions = sum(int(attempt.get("summary", {}).get("total_questions") or 0) for attempt in attempts)
+    correct_answers = sum(int(attempt.get("summary", {}).get("correct_answers") or 0) for attempt in attempts)
+    obtained_marks = sum(float(attempt.get("summary", {}).get("obtained_marks") or 0) for attempt in attempts)
+    total_marks = sum(float(attempt.get("summary", {}).get("total_marks") or 0) for attempt in attempts)
+    raw_accuracy = round((correct_answers / total_questions) * 100, 2) if total_questions else 0.0
+    weighted_accuracy = round((obtained_marks / total_marks) * 100, 2) if total_marks else 0.0
+    return {
+        "raw_accuracy": raw_accuracy,
+        "weighted_accuracy": weighted_accuracy,
+        "marks_percent": weighted_accuracy,
+        "obtained_marks": round(obtained_marks, 2),
+        "total_marks": round(total_marks, 2),
+        "correct_answers": correct_answers,
+        "total_questions": total_questions,
+    }
 
-    top_candidate_payload = analysis_payload.get("candidate_analyses", {}).get(str(top_candidate_id))
-    if top_candidate_payload:
-        filtered_payload = _filter_candidate_analysis_by_exam(top_candidate_payload, exam_id)
-        if filtered_payload is None:
-            return {"ranking": top_performer}
-        primary_attempt = filtered_payload.get("primary_attempt", {}) or {}
-        profile = filtered_payload.get("profile", {})
-        candidate_name = filtered_payload.get("candidate_name") or profile.get("name") or f"Candidate {top_candidate_id}"
+
+def _build_attempt_report_rows(attempts: list[dict]) -> list[dict]:
+    rows = []
+    for attempt in attempts:
+        summary = attempt.get("summary", {})
+        ranking_summary = attempt.get("ranking_summary", {})
+        rows.append(
+            {
+                "attempt_id": attempt.get("attempt_id"),
+                "exam_id": attempt.get("exam", {}).get("exam_id"),
+                "exam_name": attempt.get("exam", {}).get("name"),
+                "rank": ranking_summary.get("attempt_rank") or ranking_summary.get("current_candidate_rank"),
+                "total_candidates": ranking_summary.get("total_candidates"),
+                "raw_accuracy": summary.get("raw_accuracy", summary.get("accuracy", 0)),
+                "weighted_accuracy": summary.get("weighted_accuracy", summary.get("overall_score_percent", 0)),
+                "marks_percent": summary.get("marks_percent", summary.get("overall_score_percent", 0)),
+                "obtained_marks": summary.get("obtained_marks", 0),
+                "total_marks": summary.get("total_marks", 0),
+                "time_taken_seconds": summary.get("time_taken_seconds", 0),
+            }
+        )
+    return rows
+
+
+def _rank_candidates_for_exam(analysis_payload: dict, exam_id: int) -> list[dict]:
+    candidate_analyses = analysis_payload.get("candidate_analyses", {})
+    rows = []
+    for row in analysis_payload.get("ranked_candidates", []):
+        candidate_id = int(row.get("candidate_id") or 0)
+        candidate_payload = candidate_analyses.get(str(candidate_id), {})
+        if _filter_candidate_analysis_by_exam(candidate_payload, exam_id) is not None:
+            rows.append(dict(row))
+    return rows
+
+
+def _build_exam_benchmark(exam_id: int, ranked_rows: list[dict]) -> dict:
+    total_candidates = len(ranked_rows)
+    if not ranked_rows:
         return {
-            "candidate": _build_candidate_basics(top_candidate_id, candidate_name, profile),
-            "ranking": top_performer,
-            "summary": filtered_payload.get("summary", {}),
-            "attempt_summaries": filtered_payload.get("attempt_summaries", []),
-            "questions": _build_question_rows(filtered_payload.get("attempts", [])),
-            "domains": _clean_domain_rows(primary_attempt.get("domains", [])),
-            "strengths": primary_attempt.get("strengths", []),
-            "weaknesses": primary_attempt.get("weaknesses", []),
-            "skill_radar": primary_attempt.get("skill_radar", {}),
-            "recommendations": primary_attempt.get("recommendations", []),
-            "recommended_courses": primary_attempt.get("recommended_courses", []),
-            "primary_attempt_id": primary_attempt.get("attempt_id"),
+            "exam_id": exam_id,
+            "total_candidates": 0,
+            "leaderboard": [],
+            "averages": {},
         }
+    return {
+        "exam_id": exam_id,
+        "total_candidates": total_candidates,
+        "top_performer": ranked_rows[0],
+        "leaderboard": ranked_rows,
+        "averages": {
+            "raw_accuracy": round(
+                sum(float(row.get("accuracy") or 0) for row in ranked_rows) / total_candidates,
+                2,
+            ),
+            "marks_percent": round(
+                sum(float(row.get("marks_percent") or 0) for row in ranked_rows) / total_candidates,
+                2,
+            ),
+            "composite_score": round(
+                sum(float(row.get("composite_score") or 0) for row in ranked_rows) / total_candidates,
+                2,
+            ),
+        },
+    }
 
-    return {"ranking": top_performer}
+
+def _validate_candidate_exam_response(response: dict, candidate_id: int) -> None:
+    benchmark = response.get("benchmark", {})
+    leaderboard = benchmark.get("leaderboard", [])
+    total_candidates = int(benchmark.get("total_candidates") or 0)
+    if total_candidates != len(leaderboard):
+        raise HTTPException(
+            status_code=500,
+            detail="Ranking validation failed: benchmark total_candidates does not match leaderboard length.",
+        )
+
+    ranks = [int(row.get("rank") or 0) for row in leaderboard]
+    if sorted(ranks) != list(range(1, total_candidates + 1)):
+        raise HTTPException(status_code=500, detail="Ranking validation failed: leaderboard ranks are inconsistent.")
+
+    selected_report = response.get("selected_candidate_report", {})
+    leaderboard_row = next(
+        (row for row in leaderboard if int(row.get("candidate_id") or 0) == candidate_id),
+        None,
+    )
+    if leaderboard_row is None:
+        raise HTTPException(status_code=500, detail="Ranking validation failed: selected candidate missing from leaderboard.")
+
+    expected_rank = int(leaderboard_row.get("rank") or 0)
+    observed_ranks = {int(selected_report.get("rank") or 0)}
+    for attempt in selected_report.get("attempts", []):
+        observed_ranks.add(int(attempt.get("rank") or 0))
+        if int(attempt.get("total_candidates") or 0) != total_candidates:
+            raise HTTPException(
+                status_code=500,
+                detail="Ranking validation failed: selected attempt total_candidates mismatch.",
+            )
+    if observed_ranks != {expected_rank}:
+        raise HTTPException(status_code=500, detail="Ranking validation failed: selected candidate rank mismatch.")
 
 
 def _clean_domain_rows(domains: list[dict]) -> list[dict]:

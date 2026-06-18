@@ -97,6 +97,52 @@ class SkillIntelligenceService:
             },
         }
 
+    async def summarize_strengths_weaknesses(
+        self,
+        *,
+        candidate_profile: dict[str, Any],
+        exam: dict[str, Any],
+        summary: dict[str, Any],
+        domains: list[dict[str, Any]],
+        questions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        prompt = self._build_strength_weakness_prompt(
+            candidate_profile=candidate_profile,
+            exam=exam,
+            summary=summary,
+            domains=domains,
+            questions=questions,
+        )
+        try:
+            body = await self._post_prompt(prompt)
+            parsed = self._parse_strength_weakness_response(body)
+        except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+            parsed = self._fallback_strength_weakness_labels(domains=domains, questions=questions)
+            return {
+                "strengths": parsed["strengths"],
+                "weaknesses": parsed["weaknesses"],
+                "raw_api": {
+                    "url": RECOMMENDATION_URL,
+                    "request_body": {"content": prompt},
+                    "ok": False,
+                    "error": str(exc),
+                    "body": locals().get("body"),
+                    "fallback_source": "domain_score_evidence",
+                },
+            }
+
+        return {
+            "strengths": parsed["strengths"],
+            "weaknesses": parsed["weaknesses"],
+            "raw_api": {
+                "url": RECOMMENDATION_URL,
+                "request_body": {"content": prompt},
+                "ok": True,
+                "error": None,
+                "body": body,
+            },
+        }
+
     async def _post_prompt(self, prompt: str) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(RECOMMENDATION_URL, json={"content": prompt})
@@ -154,6 +200,58 @@ class SkillIntelligenceService:
             f"Questions: {json.dumps(compact_questions)}"
         )
 
+    def _build_strength_weakness_prompt(
+        self,
+        *,
+        candidate_profile: dict[str, Any],
+        exam: dict[str, Any],
+        summary: dict[str, Any],
+        domains: list[dict[str, Any]],
+        questions: list[dict[str, Any]],
+    ) -> str:
+        compact_questions = [
+            {
+                "question_id": question.get("question_id"),
+                "domain": question.get("domain"),
+                "topic": question.get("topic"),
+                "primary_skill": question.get("primary_skill"),
+                "marks_obtained": question.get("marks_obtained"),
+                "full_marks": question.get("full_marks"),
+                "status": question.get("status"),
+            }
+            for question in questions
+        ]
+        instructions = {
+            "hard_requirements": [
+                "Return strict JSON only.",
+                "Use only the supplied domain/topic/skill evidence.",
+                "Do not use fixed generic labels or a template.",
+                "Group related question skills into 2 to 5 concise strength labels and 2 to 5 concise weakness labels.",
+                "Each label must be a readable capability area, not a sentence and not a marks formula.",
+                "Prefer domain-level capability labels so dashboards do not show too many variables.",
+            ],
+            "json_shape": {
+                "strengths": ["capability label"],
+                "weaknesses": ["capability label"],
+            },
+        }
+        payload = {
+            "candidate_profile": {
+                "applied_role": candidate_profile.get("position"),
+                "self_reported_proficiency": candidate_profile.get("computer_proficiency"),
+                "languages": candidate_profile.get("languages", []),
+            },
+            "exam": exam,
+            "summary": summary,
+            "domains": domains,
+            "questions": compact_questions,
+        }
+        return (
+            "Label candidate strengths and weaknesses for an assessment dashboard. "
+            f"Instructions: {json.dumps(instructions)} "
+            f"Evidence: {json.dumps(payload)}"
+        )
+
     async def _retry_incomplete_ai_labels(
         self,
         *,
@@ -203,7 +301,10 @@ class SkillIntelligenceService:
         retry_body: dict[str, Any],
         questions: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        retry_parsed = self._parse_response(retry_body)
+        try:
+            retry_parsed = self._parse_response(retry_body, require_skills=False)
+        except (ValueError, json.JSONDecodeError):
+            return parsed
         merged_by_id = self._items_by_question_id(parsed, questions)
         retry_by_id = self._items_by_question_id(retry_parsed, questions)
         retry_items = list(retry_parsed.get("questions", []))
@@ -260,11 +361,11 @@ class SkillIntelligenceService:
             "questions": completed_items,
         }
 
-    def _parse_response(self, body: dict[str, Any]) -> dict[str, Any]:
+    def _parse_response(self, body: dict[str, Any], *, require_skills: bool = True) -> dict[str, Any]:
         if isinstance(body.get("questions"), list):
             parsed = body
         else:
-            response_text = str(body.get("response", "")).strip()
+            response_text = self._first_response_text(body)
             parsed = json.loads(self._extract_json(response_text))
 
         question_items = parsed.get("questions", [])
@@ -279,10 +380,124 @@ class SkillIntelligenceService:
         skills = [str(item).strip() for item in parsed.get("skills", []) if str(item).strip()]
         if not skills:
             skills = [item["primary_skill"] for item in normalized_questions if item.get("primary_skill")]
-        if not skills:
+        if require_skills and not skills:
             raise ValueError("Incomplete enrichment response: missing skills")
 
         return {"skills": list(dict.fromkeys(skills))[:8], "questions": normalized_questions}
+
+    def _parse_strength_weakness_response(self, body: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(body.get("strengths"), list) or isinstance(body.get("weaknesses"), list):
+            parsed = body
+        else:
+            response_text = self._first_response_text(body)
+            parsed = json.loads(self._extract_json(response_text))
+
+        strengths = self._clean_label_list(parsed.get("strengths", []))[:5]
+        weaknesses = self._clean_label_list(parsed.get("weaknesses", []))[:5]
+        if not strengths and not weaknesses:
+            raise ValueError("Incomplete strength/weakness response")
+        return {"strengths": strengths, "weaknesses": weaknesses}
+
+    def _first_response_text(self, body: dict[str, Any]) -> str:
+        for key in ["response", "content", "message", "answer", "data", "result"]:
+            value = body.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, dict):
+                nested = self._first_response_text(value)
+                if nested:
+                    return nested
+        choices = body.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                nested = self._first_response_text(choice)
+                if nested:
+                    return nested
+        return ""
+
+    def _fallback_strength_weakness_labels(
+        self,
+        *,
+        domains: list[dict[str, Any]],
+        questions: list[dict[str, Any]],
+    ) -> dict[str, list[str]]:
+        scored_domains = []
+        for domain in domains:
+            label = self._clean_label(domain.get("domain"))
+            if not label:
+                continue
+            scored_domains.append(
+                {
+                    "label": label,
+                    "score": float(domain.get("score_percent") or domain.get("accuracy") or 0),
+                    "questions": int(domain.get("total_questions") or 0),
+                }
+            )
+
+        strengths = [
+            item["label"]
+            for item in sorted(
+                scored_domains,
+                key=lambda value: (value["score"], value["questions"], value["label"]),
+                reverse=True,
+            )
+            if item["score"] >= 70
+        ][:5]
+        weaknesses = [
+            item["label"]
+            for item in sorted(scored_domains, key=lambda value: (value["score"], -value["questions"], value["label"]))
+            if item["score"] < 60
+        ][:5]
+
+        if strengths or weaknesses:
+            return {
+                "strengths": list(dict.fromkeys(strengths)),
+                "weaknesses": list(dict.fromkeys(weaknesses)),
+            }
+
+        question_labels: dict[str, dict[str, float]] = {}
+        for question in questions:
+            label = (
+                self._clean_label(question.get("domain"))
+                or self._clean_label(question.get("primary_skill"))
+                or self._clean_label(question.get("topic"))
+            )
+            if not label:
+                continue
+            stats = question_labels.setdefault(label, {"marks_obtained": 0.0, "full_marks": 0.0})
+            stats["marks_obtained"] += float(question.get("marks_obtained") or 0)
+            stats["full_marks"] += float(question.get("full_marks") or 0)
+
+        derived = []
+        for label, stats in question_labels.items():
+            score = (stats["marks_obtained"] / stats["full_marks"] * 100) if stats["full_marks"] else 0.0
+            derived.append({"label": label, "score": score})
+
+        return {
+            "strengths": [
+                item["label"]
+                for item in sorted(derived, key=lambda value: (value["score"], value["label"]), reverse=True)
+                if item["score"] >= 70
+            ][:5],
+            "weaknesses": [
+                item["label"]
+                for item in sorted(derived, key=lambda value: (value["score"], value["label"]))
+                if item["score"] < 60
+            ][:5],
+        }
+
+    def _clean_label_list(self, values: Any) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        labels = []
+        for value in values:
+            label = re.sub(r"\s+", " ", str(value or "")).strip()
+            if self._is_placeholder_label(label):
+                continue
+            labels.append(label)
+        return list(dict.fromkeys(labels))
 
     def _extract_json(self, response_text: str) -> str:
         cleaned = response_text.strip()
@@ -306,6 +521,8 @@ class SkillIntelligenceService:
         primary_skill = self._clean_label(item.get("primary_skill"))
         topic = self._clean_label(item.get("topic"))
         domain = self._clean_label(item.get("domain"))
+        if primary_skill is None:
+            primary_skill = topic or domain
         supporting_skills = [
             skill
             for skill in (self._clean_label(value) for value in item.get("supporting_skills", []))

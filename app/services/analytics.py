@@ -52,6 +52,33 @@ def _first_present_number(payload: dict[str, Any], keys: list[str]) -> tuple[flo
     return 0.0, None
 
 
+def _first_positive_number(payload: dict[str, Any], keys: list[str]) -> tuple[float, str | None]:
+    for key in keys:
+        if key in payload and payload.get(key) not in (None, ""):
+            value = _safe_float(payload.get(key))
+            if value > 0:
+                return value, key
+    return 0.0, None
+
+
+def _first_present_value(payload: dict[str, Any], keys: list[str]) -> tuple[Any, str | None]:
+    for key in keys:
+        if key in payload and payload.get(key) not in (None, ""):
+            return payload.get(key), key
+    return None, None
+
+
+def _first_nonempty_label(payload: dict[str, Any], keys: list[str]) -> tuple[str, str | None]:
+    invalid = {"", "unknown", "n/a", "na", "none", "null"}
+    for key in keys:
+        if key not in payload:
+            continue
+        label = str(payload.get(key) or "").strip()
+        if label and label.lower() not in invalid:
+            return label, key
+    return "", None
+
+
 def _extract_full_marks(question: dict[str, Any]) -> tuple[float, str | None]:
     return _first_present_number(
         question,
@@ -85,6 +112,17 @@ def _extract_marks_obtained(question: dict[str, Any], full_marks: float, is_corr
             "Candidate_Marks",
             "QuestionObtainedMarks",
             "Question_Obtained_Marks",
+            "QuestionMarksObtained",
+            "Question_Marks_Obtained",
+            "CandidateObtainedMarks",
+            "Candidate_Obtained_Marks",
+            "AnswerMarks",
+            "Answer_Marks",
+            "MarksAwarded",
+            "Marks_Awarded",
+            "EvaluatedScore",
+            "EvaluatorMarks",
+            "Evaluator_Marks",
             "Score",
             "score",
             "marks_obtained",
@@ -96,7 +134,7 @@ def _extract_marks_obtained(question: dict[str, Any], full_marks: float, is_corr
     return (full_marks if is_correct_without_marks else 0.0), "legacy_correctness_fallback"
 
 
-def _build_topic_strengths_and_weaknesses(question_rows: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+def _build_local_strengths_and_weaknesses(question_rows: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
     topic_stats: dict[str, dict[str, float]] = defaultdict(
         lambda: {"questions": 0, "marks_obtained": 0.0, "total_marks": 0.0}
     )
@@ -308,39 +346,57 @@ def _question_speed_score(time_spent_seconds: float, average_time_seconds: float
 def _build_skill_radar(
     *,
     question_rows: list[dict[str, Any]],
-    all_skill_labels: list[str],
     average_time_seconds: float,
     source: str,
 ) -> dict[str, Any]:
-    skill_scores: dict[str, list[float]] = defaultdict(list)
-    skill_question_ids: dict[str, set[int]] = defaultdict(set)
+    domain_scores: dict[str, list[float]] = defaultdict(list)
+    domain_skill_scores: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    domain_question_ids: dict[str, set[int]] = defaultdict(set)
 
     for row in question_rows:
+        domain = str(row.get("domain") or DEFAULT_LABEL).strip() or DEFAULT_LABEL
         marks_percent = (row["marks_obtained"] / row["full_marks"] * 100) if row["full_marks"] else 0.0
         accuracy_score = 100.0 if row["is_correct"] else (50.0 if row["status"] == "Partial" else 0.0)
         speed_score = _question_speed_score(row["time_spent_seconds"], average_time_seconds)
         question_score = round((marks_percent * 0.70) + (accuracy_score * 0.15) + (speed_score * 0.15), 2)
+        domain_scores[domain].append(question_score)
+        domain_question_ids[domain].add(row["question_id"])
 
         skills = [row.get("primary_skill")] + list(row.get("supporting_skills", []))
         deduped_skills = [skill for skill in dict.fromkeys(skills) if skill]
         for index, skill in enumerate(deduped_skills):
             weight = 1.0 if index == 0 else 0.6
-            skill_scores[skill].append(question_score * weight)
-            skill_question_ids[skill].add(row["question_id"])
+            domain_skill_scores[domain][skill].append(question_score * weight)
 
     labels = []
     scores = []
     details = []
-    for skill in dict.fromkeys(all_skill_labels):
-        values = skill_scores.get(skill, [])
+    for domain in sorted(domain_scores):
+        values = domain_scores.get(domain, [])
         score = round(sum(values) / len(values), 2) if values else 0.0
-        labels.append(skill)
+        labels.append(domain)
         scores.append(score)
+        skills = []
+        for skill, skill_values in sorted(domain_skill_scores.get(domain, {}).items()):
+            skill_score = round(sum(skill_values) / len(skill_values), 2) if skill_values else 0.0
+            skills.append(
+                {
+                    "skill": skill,
+                    "score": skill_score,
+                    "question_count": sum(
+                        1
+                        for row in question_rows
+                        if row.get("domain") == domain
+                        and skill in [row.get("primary_skill")] + list(row.get("supporting_skills", []))
+                    ),
+                }
+            )
         details.append(
             {
-                "skill": skill,
+                "domain": domain,
                 "score": score,
-                "question_count": len(skill_question_ids.get(skill, set())),
+                "question_count": len(domain_question_ids.get(domain, set())),
+                "skills": skills,
             }
         )
 
@@ -375,7 +431,8 @@ def _compute_record_accuracy(record: dict[str, Any]) -> float:
         )
         if is_correct:
             correct += 1
-    return round((correct / attempted) * 100, 2) if attempted else 0.0
+    total_questions = len(questions)
+    return round((correct / total_questions) * 100, 2) if total_questions else 0.0
 
 
 def _compute_record_marks(record: dict[str, Any], fallback_total_marks: float = 0.0) -> tuple[float, float]:
@@ -418,6 +475,125 @@ def _compute_record_total_time(record: dict[str, Any]) -> int:
     if started_on and submitted_on:
         return max(0, int((submitted_on - started_on).total_seconds()))
     return 0
+
+
+def _extract_exam_duration_minutes(*, metadata: dict[str, Any], summary: dict[str, Any], attempt: dict[str, Any]) -> int:
+    for payload in [metadata, summary, attempt]:
+        value, key = _first_positive_number(
+            payload,
+            [
+                "Exam_Duration",
+                "ExamDuration",
+                "ExamDurationMinutes",
+                "DurationMinutes",
+                "Duration_Minutes",
+                "TimeDuration",
+                "Time_Duration",
+                "TotalTime",
+                "Total_Time",
+            ],
+        )
+        if key is not None:
+            return int(value)
+
+        seconds, seconds_key = _first_positive_number(
+            payload,
+            ["ExamDurationSeconds", "DurationSeconds", "Duration_Seconds"],
+        )
+        if seconds_key is not None:
+            return int(round(seconds / 60))
+    return 0
+
+
+def _extract_evaluation_type(*, metadata: dict[str, Any], summary: dict[str, Any], attempt: dict[str, Any]) -> str:
+    for payload in [metadata, summary, attempt]:
+        label, _ = _first_nonempty_label(
+            payload,
+            [
+                "Evaluation_Type_Name",
+                "EvaluationTypeName",
+                "Evaluation_Type",
+                "EvaluationType",
+                "Exam_Evaluation_Type",
+                "ExamEvaluationType",
+                "QuestionEvaluationType",
+                "AssessmentType",
+                "Assessment_Type",
+            ],
+        )
+        if label:
+            return label
+    return "Unknown"
+
+
+def _validate_exam_metadata(exam: dict[str, Any]) -> None:
+    if int(exam.get("duration_minutes") or 0) <= 0:
+        raise ValueError(
+            f"Exam metadata validation failed for exam_id {exam.get('exam_id')}: duration_minutes must be greater than zero."
+        )
+    evaluation_type = str(exam.get("evaluation_type") or "").strip()
+    if not evaluation_type or evaluation_type.lower() == "unknown":
+        raise ValueError(
+            f"Exam metadata validation failed for exam_id {exam.get('exam_id')}: evaluation_type is missing."
+        )
+
+
+def _reconcile_missing_question_marks(
+    *,
+    question_rows: list[dict[str, Any]],
+    target_obtained_marks: float,
+) -> None:
+    current_total = round(sum(float(row.get("marks_obtained") or 0) for row in question_rows), 2)
+    missing_total = round(target_obtained_marks - current_total, 2)
+    if missing_total <= 0:
+        return
+
+    candidates = [
+        row
+        for row in question_rows
+        if row.get("is_answered")
+        and str(row.get("marks_source") or "").endswith("fallback")
+        and float(row.get("marks_obtained") or 0) < float(row.get("full_marks") or 0)
+    ]
+    if not candidates:
+        return
+
+    total_capacity = round(
+        sum(float(row.get("full_marks") or 0) - float(row.get("marks_obtained") or 0) for row in candidates),
+        2,
+    )
+    if total_capacity <= 0:
+        return
+
+    for index, row in enumerate(candidates):
+        capacity = float(row.get("full_marks") or 0) - float(row.get("marks_obtained") or 0)
+        if index == len(candidates) - 1:
+            award = min(capacity, missing_total)
+        else:
+            award = min(capacity, round((capacity / total_capacity) * missing_total, 2))
+        if award <= 0:
+            continue
+        row["marks_obtained"] = round(float(row.get("marks_obtained") or 0) + award, 2)
+        row["marks_percent"] = (
+            round((float(row["marks_obtained"]) / float(row.get("full_marks") or 0)) * 100, 2)
+            if float(row.get("full_marks") or 0)
+            else 0.0
+        )
+        row["marks_source"] = "attempt_total_reconciled"
+        row["is_correct"] = _is_correct_from_marks(
+            float(row["marks_obtained"]),
+            float(row.get("full_marks") or 0),
+            bool(row.get("is_correct")),
+        )
+        row["status"] = _question_status(
+            is_answered=bool(row.get("is_answered")),
+            is_correct=bool(row.get("is_correct")),
+            marks_obtained=float(row["marks_obtained"]),
+            full_marks=float(row.get("full_marks") or 0),
+        )
+        missing_total = round(missing_total - award, 2)
+        if missing_total <= 0:
+            break
 
 
 def _build_rankings(
@@ -628,6 +804,11 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
         summary,
         ["TotalMarks", "total_marks", "FullMarks", "MaxMarks"],
     )
+    if summary_obtained_source is not None:
+        _reconcile_missing_question_marks(
+            question_rows=question_rows,
+            target_obtained_marks=summary_obtained_marks,
+        )
     obtained_marks = round(
         summary_obtained_marks if summary_obtained_source is not None else sum(row["marks_obtained"] for row in question_rows),
         2,
@@ -639,10 +820,11 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
     correct_answers = sum(1 for row in question_rows if row["is_correct"])
     partial_answers = sum(1 for row in question_rows if row["status"] == "Partial")
     incorrect_answers = sum(1 for row in question_rows if row["status"] == "Incorrect")
-    overall_accuracy = round((correct_answers / attempted_questions) * 100, 2) if attempted_questions else 0.0
+    raw_accuracy = round((correct_answers / total_questions) * 100, 2) if total_questions else 0.0
+    weighted_accuracy = round((obtained_marks / total_marks) * 100, 2) if total_marks else 0.0
     average_time = round((total_time_seconds / attempted_questions), 2) if attempted_questions else 0.0
 
-    strengths, weaknesses = _build_topic_strengths_and_weaknesses(question_rows)
+    strengths, weaknesses = _build_local_strengths_and_weaknesses(question_rows)
 
     metadata = raw_payload.get("metadata", {})
     candidate = raw_payload.get("candidate", {})
@@ -651,7 +833,14 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
 
     payload = {
         "student": {
-            "candidate_id": int(candidate.get("candidateid") or attempt.get("Candidate_Id") or 0),
+            "candidate_id": int(
+                candidate.get("candidateid")
+                or attempt.get("Candidate_Id")
+                or attempt.get("CandidateId")
+                or attempt.get("candidateId")
+                or attempt.get("candidateid")
+                or 0
+            ),
             "registration_number": candidate.get("registrationnumber", "Unavailable"),
             "name": " ".join(
                 part for part in [
@@ -672,17 +861,24 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
         "exam": {
             "exam_id": int(attempt.get("Exam_Id") or attempt.get("ExamId") or summary.get("ID") or summary.get("ExamId") or 0),
             "name": metadata.get("Exam_Name") or attempt.get("Exam_Name") or attempt.get("ExamName") or summary.get("Exam_Name") or summary.get("ExamName") or "Assessment",
-            "duration_minutes": int(
-                metadata.get("Exam_Duration")
-                or summary.get("Exam_Duration")
-                or 0
+            "duration_minutes": _extract_exam_duration_minutes(
+                metadata=metadata,
+                summary=summary,
+                attempt=attempt,
             ),
             "difficulty": metadata.get("Exam_Level_Name") or summary.get("Exam_Level_Name") or "Intermediate",
             "total_questions": total_questions,
-            "evaluation_type": summary.get("Evaluation_Type_Name", "Unknown"),
+            "evaluation_type": _extract_evaluation_type(
+                metadata=metadata,
+                summary=summary,
+                attempt=attempt,
+            ),
         },
         "summary": {
-            "overall_score_percent": round((obtained_marks / total_marks) * 100, 2) if total_marks else 0.0,
+            "overall_score_percent": weighted_accuracy,
+            "marks_percent": weighted_accuracy,
+            "raw_accuracy": raw_accuracy,
+            "weighted_accuracy": weighted_accuracy,
             "obtained_marks": obtained_marks,
             "total_marks": total_marks,
             "correct_answers": correct_answers,
@@ -690,7 +886,7 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
             "incorrect_answers": incorrect_answers,
             "attempted_questions": attempted_questions,
             "total_questions": total_questions,
-            "accuracy": overall_accuracy,
+            "accuracy": raw_accuracy,
             "time_taken_seconds": total_time_seconds,
             "time_taken_display": _seconds_to_display(total_time_seconds),
             "average_time_per_question_seconds": average_time,
@@ -713,6 +909,7 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
         "raw_apis": raw_payload.get("raw_apis", {}),
         "generated_at": generated_at,
     }
+    _validate_exam_metadata(payload["exam"])
 
     skill_service = SkillIntelligenceService()
     skill_result = await skill_service.enrich(
@@ -732,7 +929,6 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
     ]
     if missing_ai_labels:
         raise AIEnrichmentError(f"ChatGPT did not return labels for question ids: {missing_ai_labels}")
-    all_skill_labels = skill_result.get("skills", [])
     for row in payload["questions"]:
         intelligence = question_intelligence.get(row["question_id"], {})
         row["domain"] = _ai_label_or_none(intelligence.get("domain"))
@@ -745,13 +941,19 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
         row["label_quality"] = intelligence.get("label_quality", "specific")
         row["label_warnings"] = intelligence.get("label_warnings", [])
 
-    payload["strengths"], payload["weaknesses"] = _build_topic_strengths_and_weaknesses(payload["questions"])
     payload["domains"] = _build_domain_rows(payload["questions"])
+    strengths_result = await skill_service.summarize_strengths_weaknesses(
+        candidate_profile=candidate_profile,
+        exam=payload["exam"],
+        summary=payload["summary"],
+        domains=payload["domains"],
+        questions=payload["questions"],
+    )
+    payload["strengths"] = strengths_result["strengths"]
+    payload["weaknesses"] = strengths_result["weaknesses"]
 
     payload["skill_radar"] = _build_skill_radar(
         question_rows=payload["questions"],
-        all_skill_labels=all_skill_labels
-        or list(dict.fromkeys(row.get("primary_skill") or row.get("domain") for row in payload["questions"] if row.get("primary_skill") or row.get("domain"))),
         average_time_seconds=average_time,
         source=skill_result.get("source", "ai"),
     )
@@ -773,6 +975,7 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
     payload["recommended_courses"] = recommendation_result["recommended_courses"]
     payload["raw_apis"]["analysis_api"] = recommendation_result["raw_api"]
     payload["raw_apis"]["skill_intelligence_api"] = skill_result["raw_api"]
+    payload["raw_apis"]["strength_weakness_api"] = strengths_result["raw_api"]
     return payload
 
 
@@ -830,7 +1033,13 @@ async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str,
                 "candidate_profile": candidate_profile,
                 "summary": attempt_record,
                 "attempt": attempt_record,
-                "metadata": _metadata_from_attempt(attempt_record, raw_payload.get("metadata", {})),
+                "metadata": _metadata_from_attempt(
+                    attempt_record,
+                    {
+                        **raw_payload.get("metadata", {}),
+                        **raw_payload.get("summary", {}),
+                    },
+                ),
                 "course_list": raw_payload.get("course_list", []),
                 "all_candidate_attempts": raw_payload.get("all_candidate_attempts", []),
                 "raw_apis": {
@@ -844,8 +1053,10 @@ async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str,
             }
             try:
                 attempt_payload = await build_dashboard_payload(candidate_raw_payload)
-            except ValueError:
-                continue
+            except ValueError as exc:
+                if "Exam Attempt Answer API did not return" in str(exc):
+                    continue
+                raise
             attempt_payload["attempt_id"] = _safe_int(
                 attempt_record.get("AttemptId") or attempt_record.get("Attempt_Id") or attempt_record.get("AttemptID")
             )
@@ -866,6 +1077,8 @@ async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str,
         )
 
     ranked_candidates = _rank_candidate_entries(candidate_analyses)
+    _apply_canonical_rankings(candidate_analyses, ranked_candidates)
+    _validate_ranking_consistency(candidate_analyses, ranked_candidates)
     generated_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     return {
         "generated_at": generated_at,
@@ -894,8 +1107,14 @@ def _candidate_id_from_record(record: dict[str, Any]) -> int:
 def _metadata_from_attempt(attempt_record: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
     return {
         **fallback,
-        "Exam_Id": attempt_record.get("Exam_Id") or attempt_record.get("ExamId") or fallback.get("Exam_Id"),
+        "Exam_Id": attempt_record.get("Exam_Id") or attempt_record.get("ExamId") or fallback.get("ID") or fallback.get("Exam_Id"),
         "Exam_Name": attempt_record.get("Exam_Name") or attempt_record.get("ExamName") or fallback.get("Exam_Name"),
+        "Exam_Duration": attempt_record.get("Exam_Duration") or attempt_record.get("ExamDuration") or fallback.get("Exam_Duration"),
+        "Evaluation_Type_Name": (
+            attempt_record.get("Evaluation_Type_Name")
+            or attempt_record.get("EvaluationTypeName")
+            or fallback.get("Evaluation_Type_Name")
+        ),
     }
 
 
@@ -921,8 +1140,10 @@ def _build_candidate_analysis_entry(
                 "exam_name": payload.get("exam", {}).get("name"),
                 "attempt_id": payload.get("attempt_id"),
                 "rank": ranking_row.get("current_candidate_rank"),
-                "accuracy": summary.get("accuracy", 0),
-                "marks_percent": summary.get("overall_score_percent", 0),
+                "accuracy": summary.get("raw_accuracy", summary.get("accuracy", 0)),
+                "raw_accuracy": summary.get("raw_accuracy", summary.get("accuracy", 0)),
+                "weighted_accuracy": summary.get("weighted_accuracy", summary.get("overall_score_percent", 0)),
+                "marks_percent": summary.get("marks_percent", summary.get("overall_score_percent", 0)),
                 "obtained_marks": summary.get("obtained_marks", 0),
                 "total_marks": summary.get("total_marks", 0),
                 "time_taken_seconds": summary.get("time_taken_seconds", 0),
@@ -969,6 +1190,8 @@ def _rank_candidate_entries(candidate_analyses: dict[str, dict[str, Any]]) -> li
                 "candidate_name": entry.get("candidate_name"),
                 "attempts": summary.get("attempts", 0),
                 "accuracy": summary.get("average_accuracy", 0),
+                "raw_accuracy": summary.get("average_accuracy", 0),
+                "weighted_accuracy": summary.get("average_marks_percent", 0),
                 "marks_percent": summary.get("average_marks_percent", 0),
                 "best_marks_percent": summary.get("best_marks_percent", 0),
                 "best_exam": summary.get("best_exam"),
@@ -1018,6 +1241,102 @@ def _rank_candidate_entries(candidate_analyses: dict[str, dict[str, Any]]) -> li
     for index, row in enumerate(rows, start=1):
         row["rank"] = index
     return rows
+
+
+def _apply_canonical_rankings(
+    candidate_analyses: dict[str, dict[str, Any]],
+    ranked_candidates: list[dict[str, Any]],
+) -> None:
+    total_candidates = len(ranked_candidates)
+    leader_score = float(ranked_candidates[0].get("composite_score") or 0) if ranked_candidates else 0.0
+    ranking_by_candidate = {
+        int(row.get("candidate_id") or 0): row
+        for row in ranked_candidates
+        if int(row.get("candidate_id") or 0)
+    }
+
+    for candidate_key, entry in candidate_analyses.items():
+        candidate_id = int(entry.get("candidate_id") or candidate_key or 0)
+        ranking = ranking_by_candidate.get(candidate_id)
+        if ranking is None:
+            continue
+        rank = int(ranking.get("rank") or 0)
+        entry["rank"] = rank
+        entry["ranking"] = ranking
+        entry.setdefault("summary", {})["rank"] = rank
+        entry["summary"]["total_candidates"] = total_candidates
+        entry["summary"]["leader_gap_score"] = round(
+            max(0.0, leader_score - float(ranking.get("composite_score") or 0)),
+            2,
+        )
+
+        for summary in entry.get("attempt_summaries", []):
+            summary["rank"] = rank
+            summary["total_candidates"] = total_candidates
+
+        for attempt in entry.get("attempts", []):
+            attempt.pop("rankings", None)
+            attempt.pop("top_performer", None)
+            attempt["ranking_summary"] = {
+                "current_candidate_rank": rank,
+                "leaderboard_rank": rank,
+                "attempt_rank": rank,
+                "total_candidates": total_candidates,
+                "ranking_source": "canonical_candidate_ranking",
+                "leader_gap_score": entry["summary"]["leader_gap_score"],
+            }
+
+
+def _validate_ranking_consistency(
+    candidate_analyses: dict[str, dict[str, Any]],
+    ranked_candidates: list[dict[str, Any]],
+) -> None:
+    total_candidates = len(ranked_candidates)
+    if total_candidates != len(candidate_analyses):
+        raise ValueError(
+            "Ranking validation failed: ranked candidate count does not match candidate_analyses count."
+        )
+
+    ranks = [int(row.get("rank") or 0) for row in ranked_candidates]
+    if sorted(ranks) != list(range(1, total_candidates + 1)):
+        raise ValueError("Ranking validation failed: leaderboard ranks are not contiguous.")
+
+    ranking_by_candidate = {
+        str(row.get("candidate_id")): row
+        for row in ranked_candidates
+    }
+    for candidate_key, entry in candidate_analyses.items():
+        ranking = ranking_by_candidate.get(candidate_key)
+        if ranking is None:
+            raise ValueError(f"Ranking validation failed: candidate {candidate_key} is missing from leaderboard.")
+        expected_rank = int(ranking.get("rank") or 0)
+        observed_ranks = {
+            int(entry.get("rank") or 0),
+            int(entry.get("summary", {}).get("rank") or 0),
+        }
+        for summary in entry.get("attempt_summaries", []):
+            observed_ranks.add(int(summary.get("rank") or 0))
+            if int(summary.get("total_candidates") or 0) != total_candidates:
+                raise ValueError(
+                    f"Ranking validation failed: candidate {candidate_key} attempt summary total_candidates mismatch."
+                )
+        for attempt in entry.get("attempts", []):
+            ranking_summary = attempt.get("ranking_summary", {})
+            observed_ranks.update(
+                {
+                    int(ranking_summary.get("current_candidate_rank") or 0),
+                    int(ranking_summary.get("leaderboard_rank") or 0),
+                    int(ranking_summary.get("attempt_rank") or 0),
+                }
+            )
+            if int(ranking_summary.get("total_candidates") or 0) != total_candidates:
+                raise ValueError(
+                    f"Ranking validation failed: candidate {candidate_key} attempt total_candidates mismatch."
+                )
+        if observed_ranks != {expected_rank}:
+            raise ValueError(
+                f"Ranking validation failed: candidate {candidate_key} has rank mismatch {sorted(observed_ranks)} vs {expected_rank}."
+            )
 
 
 def _seconds_to_display(total_seconds: int) -> str:

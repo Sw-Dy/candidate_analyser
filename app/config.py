@@ -19,9 +19,9 @@ CANDIDATE_DETAILS_URL = (
     "GetCandidateBasicDetails"
 )
 CURRENT_CANDIDATE_PROFILE_URL = "https://centralizedapi.iecsl.in/api/CandidateProfile/CandidateEAF"
-EXAM_SUMMARY_URL = "https://lmsapi.iecsl.in/api/LMS/GetSubmittedExamSummary"
-EXAM_ATTEMPT_URL = "https://lmsapi.iecsl.in/api/LMS/GetExamAttemptAnswer"
-EXAM_METADATA_URL = "https://lmsapi.iecsl.in/api/LMS/GetExternalExamById"
+EXAM_SUMMARY_URL = "https://lmsdemoapi.iecsl.in/api/LMS/GetSubmittedExamSummary"
+EXAM_ATTEMPT_URL = "https://lmsdemoapi.iecsl.in/api/LMS/GetExamAttemptAnswer"
+EXAM_METADATA_URL = "https://lmsdemoapi.iecsl.in/api/LMS/GetExternalExamById"
 ALL_CANDIDATE_ATTEMPTS_URL = (
     "https://lmsdemoapi.iecsl.in/api/Lms/GetAllCandidateExamAttemptAnswer"
 )

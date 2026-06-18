@@ -221,27 +221,22 @@ Returns only that candidate's analysed attempt list.
 ### One candidate's analyses for one exam
 
 ```text
-GET /api/analysis/candidate/{candidate_id}/exam/{exam_id}
+GET /api/analysis/candidate-exam?candidate_id={candidate_id}&exam_id={exam_id}
 ```
 
 Example:
 
 ```text
-GET /api/analysis/candidate/12254/exam/9
+GET /api/analysis/candidate-exam?candidate_id=12254&exam_id=9
 ```
 
 Returns a compact candidate/exam payload with:
 
-- basic candidate details
 - exam details
-- candidate summary for that exam
-- attempt summaries
-- `questions`, containing all selected-candidate questions with topic, domain, marks, status, answers, and skill labels
-- `primary_attempt_id`
-- `analyses`, containing compact analysed attempts for that candidate and exam
-- `top_performer_analysis`, containing the best-ranked candidate's compact analysis for the same exam
+- `selected_candidate_report`, containing candidate basics, explicit raw/weighted/marks metrics, attempts, questions, strengths, weaknesses, and traceable recommendations
+- `benchmark`, containing the canonical ranked leaderboard and cohort averages for the selected exam
 
-The compact response excludes repeated `student` and `exam` objects inside each attempt, cohort-level `rankings`, `top_performer`, and heavy debug payloads such as `raw_apis`.
+The compact response excludes repeated `student` and `exam` objects inside each attempt, duplicate analysis blocks, repeated ranking objects, and heavy debug payloads such as `raw_apis`. Response generation fails if rank or candidate-count validation detects inconsistent data.
 
 ### Dashboard overview
 
@@ -511,7 +506,7 @@ curl.exe "http://127.0.0.1:8000/api/analysis/candidate/12254/attempts"
 Get one candidate's analyses for one exam:
 
 ```bash
-curl.exe "http://127.0.0.1:8000/api/analysis/candidate/12254/exam/9"
+curl.exe "http://127.0.0.1:8000/api/analysis/candidate-exam?candidate_id=12254&exam_id=9"
 ```
 
 Open dashboard:
