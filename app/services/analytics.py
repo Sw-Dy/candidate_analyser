@@ -1017,7 +1017,14 @@ async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str,
     candidate_analyses: dict[str, dict[str, Any]] = {}
     all_attempt_analyses: list[dict[str, Any]] = []
 
-    for candidate_id in sorted(attempts_by_candidate):
+    # Only process the requested candidate first (if specified) for full analysis
+    candidates_to_process = []
+    if requested_candidate_id is not None:
+        candidates_to_process = [requested_candidate_id]
+    else:
+        candidates_to_process = sorted(attempts_by_candidate)
+
+    for candidate_id in candidates_to_process:
         record = candidate_records.get(str(candidate_id), {})
         candidate_details = record.get("details") or (
             raw_payload.get("candidate", {}) if candidate_id == default_candidate_id else {}
@@ -1076,6 +1083,34 @@ async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str,
             attempt_payloads=attempt_payloads,
         )
 
+    # Add minimal entries for remaining candidates (for ranking only)
+    for candidate_id in sorted(attempts_by_candidate):
+        if str(candidate_id) in candidate_analyses:
+            continue
+        record = candidate_records.get(str(candidate_id), {})
+        candidate_details = record.get("details") or {}
+        candidate_profile = record.get("profile") or {}
+        
+        minimal_attempts = []
+        for attempt_index, attempt_record in enumerate(attempts_by_candidate[candidate_id], start=1):
+            minimal_attempt = _build_minimal_attempt_entry(
+                candidate_id=candidate_id,
+                attempt_record=attempt_record,
+                candidate_details=candidate_details,
+                raw_payload=raw_payload,
+            )
+            if minimal_attempt:
+                minimal_attempts.append(minimal_attempt)
+        
+        if not minimal_attempts:
+            continue
+            
+        candidate_analyses[str(candidate_id)] = _build_candidate_analysis_entry(
+            candidate_id=candidate_id,
+            attempt_payloads=minimal_attempts,
+        )
+        all_attempt_analyses.extend(minimal_attempts)
+
     ranked_candidates = _rank_candidate_entries(candidate_analyses)
     _apply_canonical_rankings(candidate_analyses, ranked_candidates)
     _validate_ranking_consistency(candidate_analyses, ranked_candidates)
@@ -1116,6 +1151,122 @@ def _metadata_from_attempt(attempt_record: dict[str, Any], fallback: dict[str, A
             or fallback.get("Evaluation_Type_Name")
         ),
     }
+
+
+def _build_minimal_attempt_entry(
+    *,
+    candidate_id: int,
+    attempt_record: dict[str, Any],
+    candidate_details: dict[str, Any],
+    raw_payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build a minimal attempt entry without calling AI services, using only data from the attempt record."""
+    try:
+        # Build summary from attempt record
+        obtained_marks, total_marks = _compute_record_marks(attempt_record)
+        accuracy = _compute_record_accuracy(attempt_record)
+        total_time_seconds = _compute_record_total_time(attempt_record)
+        
+        questions = _extract_record_questions(attempt_record)
+        total_questions = len(questions)
+        attempted_questions = sum(
+            1 for q in questions if q.get("IsAnswered") or q.get("is_answered")
+        )
+        
+        marks_percent = round((obtained_marks / total_marks) * 100, 2) if total_marks else 0.0
+        avg_time = (
+            round(total_time_seconds / attempted_questions, 2)
+            if attempted_questions
+            else 0.0
+        )
+        
+        # Build student info
+        student = {
+            "candidate_id": candidate_id,
+            "registration_number": candidate_details.get("registrationnumber", "Unavailable"),
+            "name": " ".join(
+                part
+                for part in [
+                    str(candidate_details.get("firstname", "")).strip(),
+                    str(candidate_details.get("middlename", "")).strip(),
+                    str(candidate_details.get("lastname", "")).strip(),
+                ]
+                if part
+            ) or f"Candidate {candidate_id}",
+            "course": candidate_details.get("postname") or "Not provided",
+            "batch": candidate_details.get("Applicationstatus") or "Not provided",
+            "mobile": candidate_details.get("mobile", "N/A"),
+            "gender": candidate_details.get("gender", "N/A"),
+            "applied_position": "Not provided",
+            "languages": [],
+            "computer_proficiency": "",
+        }
+        
+        # Build exam info
+        exam = {
+            "exam_id": _safe_int(
+                attempt_record.get("Exam_Id")
+                or attempt_record.get("ExamID")
+                or attempt_record.get("ExamId")
+                or attempt_record.get("exam_id")
+                or attempt_record.get("ID")
+            ),
+            "name": (
+                attempt_record.get("Exam_Name")
+                or attempt_record.get("ExamName")
+                or "Assessment"
+            ),
+            "duration_minutes": 0,
+            "difficulty": "Intermediate",
+            "total_questions": total_questions,
+            "evaluation_type": "Unknown",
+        }
+        
+        # Build summary
+        summary = {
+            "overall_score_percent": marks_percent,
+            "marks_percent": marks_percent,
+            "raw_accuracy": accuracy,
+            "weighted_accuracy": marks_percent,
+            "obtained_marks": obtained_marks,
+            "total_marks": total_marks,
+            "correct_answers": sum(1 for q in questions if _is_correct_by_options(q)),
+            "partial_answers": 0,
+            "incorrect_answers": 0,
+            "attempted_questions": attempted_questions,
+            "total_questions": total_questions,
+            "accuracy": accuracy,
+            "time_taken_seconds": total_time_seconds,
+            "time_taken_display": _seconds_to_display(total_time_seconds) if total_time_seconds else "0s",
+            "average_time_per_question_seconds": avg_time,
+            "correct_vs_incorrect_ratio": 0,
+        }
+        
+        return {
+            "student": student,
+            "exam": exam,
+            "summary": summary,
+            "domains": [],
+            "questions": [],
+            "strengths": [],
+            "weaknesses": [],
+            "skill_radar": {"labels": [], "scores": [], "details": [], "source": "pending"},
+            "rankings": [],
+            "top_performer": {},
+            "ranking_summary": {},
+            "recommendations": [],
+            "recommended_courses": [],
+            "raw_apis": {},
+            "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "attempt_id": _safe_int(
+                attempt_record.get("AttemptId")
+                or attempt_record.get("Attempt_Id")
+                or attempt_record.get("AttemptID")
+            ),
+            "attempt_source": "all_candidate_attempts",
+        }
+    except Exception:
+        return None
 
 
 def _build_candidate_analysis_entry(

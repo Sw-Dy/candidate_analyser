@@ -220,6 +220,29 @@ async def _load_dashboard_payload(
     candidate_id: int | None = None,
     exam_id: int | None = None,
 ) -> tuple[dict, str]:
+    # First check cached data if available and not forcing refresh
+    if not force_refresh and LIVE_ANALYSIS_JSON_PATH.exists():
+        try:
+            cached_payload = json.loads(LIVE_ANALYSIS_JSON_PATH.read_text(encoding="utf-8"))
+            # Check if cached payload has the requested data
+            has_valid_data = False
+            if candidate_id is None and exam_id is None:
+                has_valid_data = True
+            elif candidate_id is not None:
+                if _payload_has_candidate(cached_payload, candidate_id):
+                    # Also check exam_id if provided
+                    if exam_id is not None:
+                        if _extract_candidate_analysis(cached_payload, candidate_id, exam_id) is not None:
+                            has_valid_data = True
+                    else:
+                        has_valid_data = True
+            
+            if has_valid_data:
+                return cached_payload, "cache"
+        except Exception as e:
+            logger.warning(f"Failed to load cached data: {e}")
+            # Fall through to live data
+
     try:
         payload = await _build_and_store_dashboard_payload(candidate_id=candidate_id, exam_id=exam_id)
         if _is_empty_candidate_payload(payload):

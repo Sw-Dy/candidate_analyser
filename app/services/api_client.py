@@ -274,10 +274,11 @@ class LMSApiClient:
 
     async def _fetch_candidate_records(self, candidate_ids: set[int]) -> dict[str, Any]:
         records: dict[str, Any] = {}
-        for candidate_id in sorted(candidate_ids):
-            details, details_response = await self.fetch_candidate_details_for(candidate_id)
-            profile, profile_response = await self.fetch_candidate_profile_for(candidate_id)
-            records[str(candidate_id)] = {
+        async def fetch_single_candidate(candidate_id: int):
+            details_task = self.fetch_candidate_details_for(candidate_id)
+            profile_task = self.fetch_candidate_profile_for(candidate_id)
+            (details, details_response), (profile, profile_response) = await asyncio.gather(details_task, profile_task)
+            return {
                 "candidate_id": candidate_id,
                 "details": details,
                 "profile": profile,
@@ -286,6 +287,10 @@ class LMSApiClient:
                     "candidate_profile": profile_response,
                 },
             }
+        tasks = [fetch_single_candidate(candidate_id) for candidate_id in sorted(candidate_ids)]
+        results = await asyncio.gather(*tasks)
+        for result in results:
+            records[str(result["candidate_id"])] = result
         return records
 
     async def _gather_payloads(self, *, candidate_id: int, exam_id: int) -> tuple[dict[str, Any], ...]:
