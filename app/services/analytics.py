@@ -727,10 +727,11 @@ def _build_rankings(
     return ranking_rows, top_performer, rank_summary
 
 
-async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]:
+async def build_dashboard_payload(raw_payload: dict[str, Any], precomputed_question_intelligence: dict[int, dict[str, Any]] | None = None) -> tuple[dict[str, Any], dict[int, dict[str, Any]]]:
     attempt = raw_payload.get("attempt", {})
     if not attempt:
         raise ValueError("Exam Attempt Answer API did not return a usable attempt payload")
+    skill_result = None
 
     questions = attempt.get("Questions", [])
     started_on = _safe_datetime(attempt.get("StartedOn") or attempt.get("ExamStartedOn"))
@@ -912,23 +913,36 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
     _validate_exam_metadata(payload["exam"])
 
     skill_service = SkillIntelligenceService()
-    skill_result = await skill_service.enrich(
-        candidate_profile=candidate_profile,
-        exam=payload["exam"],
-        questions=question_rows,
-    )
-    question_intelligence = {
-        item["question_id"]: item
-        for item in skill_result.get("questions", [])
-        if item.get("question_id") is not None
-    }
-    missing_ai_labels = [
-        row["question_id"]
-        for row in payload["questions"]
-        if row["question_id"] not in question_intelligence
-    ]
-    if missing_ai_labels:
-        raise AIEnrichmentError(f"ChatGPT did not return labels for question ids: {missing_ai_labels}")
+    
+    if precomputed_question_intelligence is not None:
+        question_intelligence = precomputed_question_intelligence
+        # Check if all questions are in the precomputed intelligence
+        missing_ai_labels = [
+            row["question_id"]
+            for row in payload["questions"]
+            if row["question_id"] not in question_intelligence
+        ]
+        if missing_ai_labels:
+            raise AIEnrichmentError(f"Precomputed intelligence missing labels for question ids: {missing_ai_labels}")
+    else:
+        skill_result = await skill_service.enrich(
+            candidate_profile=candidate_profile,
+            exam=payload["exam"],
+            questions=question_rows,
+        )
+        question_intelligence = {
+            item["question_id"]: item
+            for item in skill_result.get("questions", [])
+            if item.get("question_id") is not None
+        }
+        missing_ai_labels = [
+            row["question_id"]
+            for row in payload["questions"]
+            if row["question_id"] not in question_intelligence
+        ]
+        if missing_ai_labels:
+            raise AIEnrichmentError(f"ChatGPT did not return labels for question ids: {missing_ai_labels}")
+    
     for row in payload["questions"]:
         intelligence = question_intelligence.get(row["question_id"], {})
         row["domain"] = _ai_label_or_none(intelligence.get("domain"))
@@ -937,7 +951,7 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
         row["supporting_skills"] = intelligence.get("supporting_skills", [])
         row["difficulty_label"] = intelligence.get("difficulty_label") or row["difficulty"]
         row["difficulty_rating"] = intelligence.get("difficulty_rating") or 3
-        row["mapping_source"] = intelligence.get("mapping_source") or skill_result.get("source", "ai_error")
+        row["mapping_source"] = intelligence.get("mapping_source") or "ai"
         row["label_quality"] = intelligence.get("label_quality", "specific")
         row["label_warnings"] = intelligence.get("label_warnings", [])
 
@@ -955,7 +969,7 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
     payload["skill_radar"] = _build_skill_radar(
         question_rows=payload["questions"],
         average_time_seconds=average_time,
-        source=skill_result.get("source", "ai"),
+        source="ai" if precomputed_question_intelligence else skill_result.get("source", "ai"),
     )
 
     rankings, top_performer, ranking_summary = _build_rankings(
@@ -974,9 +988,10 @@ async def build_dashboard_payload(raw_payload: dict[str, Any]) -> dict[str, Any]
     payload["recommendations"] = recommendation_result["recommendations"]
     payload["recommended_courses"] = recommendation_result["recommended_courses"]
     payload["raw_apis"]["analysis_api"] = recommendation_result["raw_api"]
-    payload["raw_apis"]["skill_intelligence_api"] = skill_result["raw_api"]
+    if not precomputed_question_intelligence:
+        payload["raw_apis"]["skill_intelligence_api"] = skill_result["raw_api"]
     payload["raw_apis"]["strength_weakness_api"] = strengths_result["raw_api"]
-    return payload
+    return payload, question_intelligence
 
 
 async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str, Any]:
@@ -1024,6 +1039,103 @@ async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str,
     else:
         candidates_to_process = sorted(attempts_by_candidate)
 
+    # Collect all unique questions from all candidates' attempts first
+    unique_questions: dict[int, dict[str, Any]] = {}
+    exam_metadata = None
+    first_candidate_profile = None
+
+    for candidate_id in candidates_to_process:
+        record = candidate_records.get(str(candidate_id), {})
+        candidate_details = record.get("details") or (
+            raw_payload.get("candidate", {}) if candidate_id == default_candidate_id else {}
+        )
+        candidate_profile = record.get("profile") or (
+            raw_payload.get("candidate_profile", {}) if candidate_id == default_candidate_id else {}
+        )
+        
+        for attempt_record in attempts_by_candidate[candidate_id]:
+            # Extract questions from this attempt
+            questions = _extract_record_questions(attempt_record)
+            for question in questions:
+                question_id = _safe_int(question.get("Question_Id") or question.get("QuestionId") or 0)
+                if question_id and question_id not in unique_questions:
+                    # Build a basic question row similar to build_dashboard_payload
+                    selected_answer, correct_answer = _extract_answers(question)
+                    is_answered = bool(question.get("IsAnswered") or question.get("is_answered"))
+                    full_marks, _ = _extract_full_marks(question)
+                    option_correct = _is_correct_by_options(question)
+                    marks_obtained, _ = _extract_marks_obtained(question, full_marks, option_correct)
+                    
+                    unique_questions[question_id] = {
+                        "question_id": question_id,
+                        "question_text": str(question.get("Question_Text", "")),
+                        "question_type": str(question.get("Question_Type_Name") or question.get("QuestionTypeName") or "Unknown"),
+                        "domain": DEFAULT_LABEL,
+                        "topic": DEFAULT_LABEL,
+                        "difficulty": "Intermediate",
+                        "mapping_source": "pending_ai",
+                        "status": _question_status(
+                            is_answered=is_answered,
+                            is_correct=_is_correct_from_marks(marks_obtained, full_marks, option_correct),
+                            marks_obtained=marks_obtained,
+                            full_marks=full_marks,
+                        ),
+                        "is_answered": is_answered,
+                        "is_correct": _is_correct_from_marks(marks_obtained, full_marks, option_correct),
+                        "marks_obtained": round(marks_obtained, 2),
+                        "full_marks": round(full_marks, 2),
+                        "marks_percent": round((marks_obtained / full_marks) * 100, 2) if full_marks else 0.0,
+                        "negative_marks": float(question.get("Negative_Marks") or 0),
+                        "time_spent_seconds": 0.0,
+                        "selected_answer": selected_answer,
+                        "correct_answer": correct_answer,
+                        "primary_skill": None,
+                        "supporting_skills": [],
+                        "difficulty_label": "Intermediate",
+                        "difficulty_rating": 3,
+                    }
+            
+            # Save exam metadata and first candidate profile for AI enrichment
+            if exam_metadata is None:
+                exam_metadata = _metadata_from_attempt(
+                    attempt_record,
+                    {
+                        **raw_payload.get("metadata", {}),
+                        **raw_payload.get("summary", {}),
+                    },
+                )
+            if first_candidate_profile is None:
+                first_candidate_profile = _build_candidate_profile(candidate_profile)
+
+    # Now run AI enrichment once on all unique questions
+    question_intelligence = {}
+    if unique_questions:
+        # Build a fake payload to get exam info
+        fake_exam = {
+            "exam_id": _safe_int(exam_metadata.get("Exam_Id") or 0),
+            "name": exam_metadata.get("Exam_Name") or "Assessment",
+            "duration_minutes": _safe_int(exam_metadata.get("Exam_Duration") or 0),
+            "difficulty": "Intermediate",
+            "total_questions": len(unique_questions),
+            "evaluation_type": exam_metadata.get("Evaluation_Type_Name") or "Unknown",
+        }
+        
+        skill_service = SkillIntelligenceService()
+        try:
+            skill_result = await skill_service.enrich(
+                candidate_profile=first_candidate_profile or {},
+                exam=fake_exam,
+                questions=list(unique_questions.values()),
+            )
+            question_intelligence = {
+                item["question_id"]: item
+                for item in skill_result.get("questions", [])
+                if item.get("question_id") is not None
+            }
+        except Exception as e:
+            print(f"Warning: AI enrichment failed, falling back to per-candidate enrichment: {e}")
+
+    # Now process each candidate with precomputed question intelligence
     for candidate_id in candidates_to_process:
         record = candidate_records.get(str(candidate_id), {})
         candidate_details = record.get("details") or (
@@ -1059,7 +1171,10 @@ async def build_all_candidate_analysis(raw_payload: dict[str, Any]) -> dict[str,
                 },
             }
             try:
-                attempt_payload = await build_dashboard_payload(candidate_raw_payload)
+                if question_intelligence:
+                    attempt_payload, _ = await build_dashboard_payload(candidate_raw_payload, question_intelligence)
+                else:
+                    attempt_payload, _ = await build_dashboard_payload(candidate_raw_payload)
             except ValueError as exc:
                 if "Exam Attempt Answer API did not return" in str(exc):
                     continue

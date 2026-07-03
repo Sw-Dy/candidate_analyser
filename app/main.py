@@ -14,7 +14,9 @@ from fastapi.templating import Jinja2Templates
 from app.config import (
     BASE_DIR,
     LIVE_ANALYSIS_JSON_PATH,
+    LIVE_ANALYSIS_DEMO_JSON_PATH,
     LIVE_API_CORPUS_JSON_PATH,
+    LIVE_API_CORPUS_DEMO_JSON_PATH,
 )
 from app.services.aggregate_dashboard import build_aggregate_dashboard
 from app.services.analytics import build_all_candidate_analysis
@@ -56,11 +58,13 @@ async def dashboard_analytics(
     force_refresh: bool = Query(default=True),
     candidate_id: int | None = Query(default=None),
     exam_id: int | None = Query(default=None),
+    use_demo: bool = Query(default=False),
 ) -> JSONResponse:
     payload, source = await _load_dashboard_payload(
         force_refresh=force_refresh,
         candidate_id=candidate_id,
         exam_id=exam_id,
+        use_demo=use_demo,
     )
     return JSONResponse(content={"data": payload, "source": source})
 
@@ -71,11 +75,13 @@ async def dashboard_overview(
     selected_candidate_id: int | None = Query(default=None),
     candidate_id: int | None = Query(default=None),
     exam_id: int | None = Query(default=None),
+    use_demo: bool = Query(default=False),
 ) -> JSONResponse:
     analysis_payload, source = await _load_dashboard_payload(
         force_refresh=force_refresh,
         candidate_id=candidate_id,
         exam_id=exam_id,
+        use_demo=use_demo,
     )
     effective_candidate_id = candidate_id if candidate_id is not None else selected_candidate_id
     if effective_candidate_id is not None and not _payload_has_candidate(analysis_payload, effective_candidate_id):
@@ -84,7 +90,7 @@ async def dashboard_overview(
             detail=f"No live analysis found for candidate_id {effective_candidate_id}.",
         )
 
-    corpus_payload = _load_live_corpus_payload()
+    corpus_payload = await _load_live_corpus_payload(use_demo=use_demo)
     overview = build_aggregate_dashboard(
         analysis_payload,
         corpus_payload,
@@ -100,18 +106,20 @@ async def analysis_all(
     force_refresh: bool = Query(default=True),
     candidate_id: int | None = Query(default=None),
     exam_id: int | None = Query(default=None),
+    use_demo: bool = Query(default=False),
 ) -> JSONResponse:
     payload, _ = await _load_dashboard_payload(
         force_refresh=force_refresh,
         candidate_id=candidate_id,
         exam_id=exam_id,
+        use_demo=use_demo,
     )
     return JSONResponse(content=payload)
 
 
 @app.get("/api/analysis/latest")
-async def analysis_latest() -> JSONResponse:
-    payload, _ = await _load_dashboard_payload(force_refresh=True)
+async def analysis_latest(use_demo: bool = Query(default=False)) -> JSONResponse:
+    payload, _ = await _load_dashboard_payload(force_refresh=True, use_demo=use_demo)
     return JSONResponse(content=payload)
 
 
@@ -121,11 +129,13 @@ async def analysis_candidate_exam_query(
     candidate_id: int = Query(...),
     exam_id: int = Query(...),
     force_refresh: bool = Query(default=False),
+    use_demo: bool = Query(default=False),
 ) -> JSONResponse:
     payload, source = await _load_dashboard_payload(
         force_refresh=force_refresh,
         candidate_id=candidate_id,
         exam_id=exam_id,
+        use_demo=use_demo,
     )
     candidate_payload = _extract_candidate_analysis(payload, candidate_id, exam_id)
     if candidate_payload is None:
@@ -150,11 +160,13 @@ async def analysis_candidate(
     candidate_id: int,
     force_refresh: bool = Query(default=False),
     exam_id: int | None = Query(default=None),
+    use_demo: bool = Query(default=False),
 ) -> JSONResponse:
     payload, _ = await _load_dashboard_payload(
         force_refresh=force_refresh,
         candidate_id=candidate_id,
         exam_id=exam_id,
+        use_demo=use_demo,
     )
     candidate_payload = _extract_candidate_analysis(payload, candidate_id, exam_id)
     if candidate_payload is None:
@@ -170,11 +182,13 @@ async def analysis_candidate_attempts(
     candidate_id: int,
     force_refresh: bool = Query(default=False),
     exam_id: int | None = Query(default=None),
+    use_demo: bool = Query(default=False),
 ) -> JSONResponse:
     payload, _ = await _load_dashboard_payload(
         force_refresh=force_refresh,
         candidate_id=candidate_id,
         exam_id=exam_id,
+        use_demo=use_demo,
     )
     candidate_payload = _extract_candidate_analysis(payload, candidate_id, exam_id)
     if candidate_payload is None:
@@ -190,11 +204,13 @@ async def analysis_candidate_exam(
     candidate_id: int,
     exam_id: int,
     force_refresh: bool = Query(default=False),
+    use_demo: bool = Query(default=False),
 ) -> JSONResponse:
     payload, source = await _load_dashboard_payload(
         force_refresh=force_refresh,
         candidate_id=candidate_id,
         exam_id=exam_id,
+        use_demo=use_demo,
     )
     candidate_payload = _extract_candidate_analysis(payload, candidate_id, exam_id)
     if candidate_payload is None:
@@ -219,11 +235,13 @@ async def _load_dashboard_payload(
     *,
     candidate_id: int | None = None,
     exam_id: int | None = None,
+    use_demo: bool = False,
 ) -> tuple[dict, str]:
     # First check cached data if available and not forcing refresh
-    if not force_refresh and LIVE_ANALYSIS_JSON_PATH.exists():
+    cache_path = LIVE_ANALYSIS_DEMO_JSON_PATH if use_demo else LIVE_ANALYSIS_JSON_PATH
+    if not force_refresh and cache_path.exists():
         try:
-            cached_payload = json.loads(LIVE_ANALYSIS_JSON_PATH.read_text(encoding="utf-8"))
+            cached_payload = json.loads(cache_path.read_text(encoding="utf-8"))
             # Check if cached payload has the requested data
             has_valid_data = False
             if candidate_id is None and exam_id is None:
@@ -244,7 +262,7 @@ async def _load_dashboard_payload(
             # Fall through to live data
 
     try:
-        payload = await _build_and_store_dashboard_payload(candidate_id=candidate_id, exam_id=exam_id)
+        payload = await _build_and_store_dashboard_payload(candidate_id=candidate_id, exam_id=exam_id, use_demo=use_demo)
         if _is_empty_candidate_payload(payload):
             logger.warning("Live dashboard refresh returned no candidates")
         return payload, "live"
@@ -265,17 +283,18 @@ async def _build_and_store_dashboard_payload(
     *,
     candidate_id: int | None = None,
     exam_id: int | None = None,
+    use_demo: bool = False,
 ) -> dict:
-    client = LMSApiClient()
+    client = LMSApiClient(use_demo=use_demo)
     raw_payload = await client.fetch_all(candidate_id=candidate_id, exam_id=exam_id)
     logger.info("Upstream API payloads:\n%s", json.dumps(raw_payload.get("raw_apis", {}), indent=2, default=str))
     payload = await build_all_candidate_analysis(raw_payload)
     logger.info("Computed live analytics:\n%s", json.dumps(payload, indent=2, default=str))
-    _write_live_json_files(raw_payload=raw_payload, payload=payload)
+    _write_live_json_files(raw_payload=raw_payload, payload=payload, use_demo=use_demo)
     return payload
 
 
-def _write_live_json_files(*, raw_payload: dict, payload: dict) -> None:
+def _write_live_json_files(*, raw_payload: dict, payload: dict, use_demo: bool = False) -> None:
     corpus_payload = {
         "generated_at": payload.get("generated_at"),
         "analysis_scope": payload.get("analysis_scope", "single_candidate"),
@@ -308,19 +327,23 @@ def _write_live_json_files(*, raw_payload: dict, payload: dict) -> None:
         },
     }
 
-    LIVE_API_CORPUS_JSON_PATH.write_text(
+    target_corpus_path = LIVE_API_CORPUS_DEMO_JSON_PATH if use_demo else LIVE_API_CORPUS_JSON_PATH
+    target_analysis_path = LIVE_ANALYSIS_DEMO_JSON_PATH if use_demo else LIVE_ANALYSIS_JSON_PATH
+
+    target_corpus_path.write_text(
         json.dumps(corpus_payload, indent=2, default=str),
         encoding="utf-8",
     )
-    LIVE_ANALYSIS_JSON_PATH.write_text(
+    target_analysis_path.write_text(
         json.dumps(payload, indent=2, default=str),
         encoding="utf-8",
     )
 
 
-def _load_live_corpus_payload() -> dict:
-    if LIVE_API_CORPUS_JSON_PATH.exists():
-        return json.loads(LIVE_API_CORPUS_JSON_PATH.read_text(encoding="utf-8"))
+async def _load_live_corpus_payload(use_demo: bool = False) -> dict:
+    corpus_path = LIVE_API_CORPUS_DEMO_JSON_PATH if use_demo else LIVE_API_CORPUS_JSON_PATH
+    if corpus_path.exists():
+        return json.loads(corpus_path.read_text(encoding="utf-8"))
     return {}
 
 
@@ -632,16 +655,20 @@ def _clean_ai_label(value: object) -> str | None:
 
 
 @app.get("/api/analysis/corpus/latest")
-async def analysis_corpus_latest(force_refresh: bool = Query(default=False)) -> JSONResponse:
-    await _build_and_store_dashboard_payload()
+async def analysis_corpus_latest(
+    force_refresh: bool = Query(default=False),
+    use_demo: bool = Query(default=False),
+) -> JSONResponse:
+    await _build_and_store_dashboard_payload(use_demo=use_demo)
 
-    if not LIVE_API_CORPUS_JSON_PATH.exists():
+    corpus_path = LIVE_API_CORPUS_DEMO_JSON_PATH if use_demo else LIVE_API_CORPUS_JSON_PATH
+    if not corpus_path.exists():
         raise HTTPException(
             status_code=404,
             detail="No live corpus JSON is available yet. Call /api/analysis/all first.",
         )
 
-    return JSONResponse(content=json.loads(LIVE_API_CORPUS_JSON_PATH.read_text(encoding="utf-8")))
+    return JSONResponse(content=json.loads(corpus_path.read_text(encoding="utf-8")))
 
 
 @app.get("/api/dashboard/history")
@@ -655,8 +682,8 @@ async def dashboard_history() -> JSONResponse:
 
 
 @app.get("/api/dashboard/export/csv")
-async def export_csv() -> StreamingResponse:
-    client = LMSApiClient()
+async def export_csv(use_demo: bool = Query(default=False)) -> StreamingResponse:
+    client = LMSApiClient(use_demo=use_demo)
     raw_payload = await client.fetch_all()
     live_payload = await build_all_candidate_analysis(raw_payload)
 

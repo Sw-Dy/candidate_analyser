@@ -8,17 +8,23 @@ import httpx
 
 from app.config import (
     ALL_CANDIDATE_ATTEMPTS_URL,
+    ALL_CANDIDATE_ATTEMPTS_URL_DEMO,
     APPLICATION_ID,
-    CANDIDATE_DETAILS_URL, 
+    CANDIDATE_DETAILS_URL,
+    CANDIDATE_DETAILS_URL_DEMO,
     CANDIDATE_ID,
     COURSE_EMAIL_ID,
     COURSE_LIST_URL,
+    COURSE_LIST_URL_DEMO,
     COURSE_USER_TYPE,
     CURRENT_CANDIDATE_PROFILE_URL,
     EXAM_ATTEMPT_URL,
+    EXAM_ATTEMPT_URL_DEMO,
     EXAM_ID,
     EXAM_METADATA_URL,
+    EXAM_METADATA_URL_DEMO,
     EXAM_SUMMARY_URL,
+    EXAM_SUMMARY_URL_DEMO,
     PORTAL_ID,
     TENANT_ID,
     USER_ID,
@@ -26,8 +32,12 @@ from app.config import (
 
 
 class LMSApiClient:
-    def __init__(self) -> None:
+    def __init__(self, use_demo: bool = False) -> None:
         self.timeout = httpx.Timeout(30.0)
+        self.use_demo = use_demo
+
+    def _select_url(self, demo_url: str, prod_url: str) -> str:
+        return demo_url if self.use_demo else prod_url
 
     async def _request(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -131,7 +141,7 @@ class LMSApiClient:
 
     async def fetch_candidate_details_for(self, candidate_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
         response = await self._request(
-            CANDIDATE_DETAILS_URL,
+            self._select_url(CANDIDATE_DETAILS_URL_DEMO, CANDIDATE_DETAILS_URL),
             {"candidateId": candidate_id, "tenantId": TENANT_ID},
         )
         return self._extract_candidate(response), response
@@ -153,7 +163,7 @@ class LMSApiClient:
 
     async def fetch_exam_summary(self, exam_id: int = EXAM_ID) -> dict[str, Any]:
         response = await self._request(
-            EXAM_SUMMARY_URL,
+            self._select_url(EXAM_SUMMARY_URL_DEMO, EXAM_SUMMARY_URL),
             {
                 "TenantID": TENANT_ID,
                 "IDApplication": APPLICATION_ID,
@@ -163,7 +173,7 @@ class LMSApiClient:
 
     async def fetch_exam_attempt(self, exam_id: int = EXAM_ID) -> dict[str, Any]:
         response = await self._request(
-            EXAM_ATTEMPT_URL,
+            self._select_url(EXAM_ATTEMPT_URL_DEMO, EXAM_ATTEMPT_URL),
             {
                 "ExamID": exam_id,
                 "TenantID": TENANT_ID,
@@ -174,7 +184,7 @@ class LMSApiClient:
 
     async def fetch_course_list(self) -> list[dict[str, Any]]:
         response = await self._request(
-            COURSE_LIST_URL,
+            self._select_url(COURSE_LIST_URL_DEMO, COURSE_LIST_URL),
             {
                 "PortalID": PORTAL_ID,
                 "TypeUser": COURSE_USER_TYPE,
@@ -186,7 +196,7 @@ class LMSApiClient:
 
     async def fetch_all_candidate_attempts(self, exam_id: int = EXAM_ID) -> list[dict[str, Any]]:
         response = await self._request(
-            ALL_CANDIDATE_ATTEMPTS_URL,
+            self._select_url(ALL_CANDIDATE_ATTEMPTS_URL_DEMO, ALL_CANDIDATE_ATTEMPTS_URL),
             {
                 "ExamID": exam_id,
                 "TenantID": TENANT_ID,
@@ -206,7 +216,7 @@ class LMSApiClient:
             {"examId": exam_id, "UserId": USER_ID, "TenantID": TENANT_ID},
         ]
         for params in candidates:
-            response = await self._request(EXAM_METADATA_URL, params)
+            response = await self._request(self._select_url(EXAM_METADATA_URL_DEMO, EXAM_METADATA_URL), params)
             body = response.get("body")
             if isinstance(body, dict):
                 return body, response
@@ -296,7 +306,7 @@ class LMSApiClient:
     async def _gather_payloads(self, *, candidate_id: int, exam_id: int) -> tuple[dict[str, Any], ...]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             candidate_task = client.get(
-                CANDIDATE_DETAILS_URL,
+                self._select_url(CANDIDATE_DETAILS_URL_DEMO, CANDIDATE_DETAILS_URL),
                 params={"candidateId": candidate_id, "tenantId": TENANT_ID},
             )
             candidate_profile_task = client.get(
@@ -304,11 +314,11 @@ class LMSApiClient:
                 params={"candidateId": candidate_id},
             )
             summary_task = client.get(
-                EXAM_SUMMARY_URL,
+                self._select_url(EXAM_SUMMARY_URL_DEMO, EXAM_SUMMARY_URL),
                 params={"TenantID": TENANT_ID, "IDApplication": APPLICATION_ID},
             )
             attempt_task = client.get(
-                EXAM_ATTEMPT_URL,
+                self._select_url(EXAM_ATTEMPT_URL_DEMO, EXAM_ATTEMPT_URL),
                 params={
                     "ExamID": exam_id,
                     "TenantID": TENANT_ID,
@@ -316,7 +326,7 @@ class LMSApiClient:
                 },
             )
             course_list_task = client.get(
-                COURSE_LIST_URL,
+                self._select_url(COURSE_LIST_URL_DEMO, COURSE_LIST_URL),
                 params={
                     "PortalID": PORTAL_ID,
                     "TypeUser": COURSE_USER_TYPE,
@@ -325,7 +335,7 @@ class LMSApiClient:
                 },
             )
             all_candidate_attempts_task = client.get(
-                ALL_CANDIDATE_ATTEMPTS_URL,
+                self._select_url(ALL_CANDIDATE_ATTEMPTS_URL_DEMO, ALL_CANDIDATE_ATTEMPTS_URL),
                 params={
                     "ExamID": exam_id,
                     "TenantID": TENANT_ID,

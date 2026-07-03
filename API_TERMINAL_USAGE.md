@@ -144,6 +144,14 @@ curl.exe "http://127.0.0.1:8000/api/dashboard/history"
 curl.exe "http://127.0.0.1:8000/api/dashboard/export/csv" -o student-assessment-analytics.csv
 ```
 
+## Demo API Toggle
+
+Add `use_demo=true` to any live analysis endpoint to route requests through the LMS demo API and use separate demo cache files.
+
+```bash
+curl.exe "http://127.0.0.1:8000/api/analysis/all?use_demo=true"
+```
+
 ## Query Parameters
 
 ```text
@@ -151,11 +159,12 @@ candidate_id=<candidate id>
 selected_candidate_id=<candidate id>
 exam_id=<exam id>
 force_refresh=true|false
+use_demo=true|false
 
 
 final api 
 
-http://127.0.0.1:8000/api/analysis/candidate-exam?candidate_id=13104&exam_id=9
+http://127.0.0.1:8000/api/analysis/candidate-exam?candidate_id=13104&exam_id=9"
 ```
 
 `force_refresh` is accepted for older callers; all endpoints load live data.
